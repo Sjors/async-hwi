@@ -6,15 +6,15 @@
 //!
 //! Currently supported:
 //!   * device:      Ledger (new app only; legacy not supported)
-//!   * subcommands: `enumerate`, `getdescriptors`, `displayaddress`
+//!   * subcommands: `enumerate`, `getdescriptors`, `displayaddress`, `signtx`
 //!
 //! Source layout:
 //!   * [`cli`] — argv parsing
 //!   * [`devices`] — per-device modules (ledger, mock); enumeration,
 //!     transport-agnostic protocol bodies, JSON shape
 //!   * [`descriptor`] — definite-descriptor inspection + BIP380 checksum
-//!   * [`policy`] — mapping descriptors to Ledger default single-sig
-//!     wallet policies
+//!   * [`policy`] — mapping descriptors / PSBT derivations to Ledger
+//!     default single-sig wallet policies
 //!   * [`commands`] — per-subcommand `run_*` dispatch (mock → simulator → HID)
 
 mod cli;
@@ -31,7 +31,16 @@ use cli::{Args, Command};
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let args = Args::parse();
+    let mut args = Args::parse();
+    if args.stdin {
+        // `--stdin` mode: re-parse the subcommand line from stdin so Core
+        // can pass a multi-kilobyte base64 PSBT to `signtx` without
+        // tripping the argv length limit.
+        match commands::read_stdin_command(&args) {
+            Ok(re) => args = re,
+            Err(e) => return commands::emit_error(e),
+        }
+    }
     let Some(command) = args.command else {
         let mut cmd = Args::command();
         let _ = cmd.print_help();
@@ -46,6 +55,10 @@ async fn main() -> ExitCode {
         },
         Command::Displayaddress { desc } => match args.fingerprint {
             Some(fp) => commands::run_displayaddress(fp, args.chain, &desc).await,
+            None => Err("a fingerprint is required for this command".into()),
+        },
+        Command::Signtx { psbt } => match args.fingerprint {
+            Some(fp) => commands::run_signtx(fp, args.chain, &psbt).await,
             None => Err("a fingerprint is required for this command".into()),
         },
     };

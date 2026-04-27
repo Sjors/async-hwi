@@ -6,12 +6,13 @@
 
 use async_hwi::ledger::{DeviceInfo, HidApi, Ledger, Transport, TransportHID};
 use bitcoin::bip32::{DerivationPath, Fingerprint};
+use bitcoin::psbt::Psbt;
 use miniscript::{Descriptor, DescriptorPublicKey};
 
 use crate::cli::Chain;
 use crate::commands::GetDescriptorsOut;
 use crate::descriptor::{address_from_descriptor, format_descriptor, ADDR_TYPES};
-use crate::policy::{build_default_policy, classify_singlesig, SingleSig};
+use crate::policy::{build_default_policy, classify_singlesig, collect_signing_groups, SingleSig};
 
 pub const LEDGER_VENDOR_ID: u16 = 0x2c97;
 
@@ -149,4 +150,61 @@ pub async fn do_displayaddress<T: Transport + Send + Sync>(
         .map_err(|e| format!("display_address: {e:?}"))?;
 
     Ok(serde_json::json!({ "address": address }).to_string())
+}
+
+/// Sign a PSBT on a Ledger. The new app insists each `sign_psbt` call be
+/// scoped to one wallet policy, so we group the PSBT inputs by their
+/// (BIP44 purpose, account) pair and require they all belong to one
+/// group — which is what Bitcoin Core's external-signer wallet
+/// (one descriptor flavour per wallet) always produces. Cross-account or
+/// cross-script-type sweeps would need multiple `sign_psbt` calls and
+/// therefore a fresh device session each, which is out of scope here.
+pub async fn do_signtx<T: Transport + Send + Sync>(
+    device: Ledger<T>,
+    fingerprint: Fingerprint,
+    chain: Chain,
+    psbt_b64: &str,
+) -> Result<String, String> {
+    use bitcoin::base64::Engine as _;
+
+    let raw = bitcoin::base64::engine::general_purpose::STANDARD
+        .decode(psbt_b64.trim())
+        .map_err(|e| format!("psbt base64 decode: {e}"))?;
+    let mut psbt = Psbt::deserialize(&raw).map_err(|e| format!("psbt parse: {e}"))?;
+
+    let coin = chain.coin_type();
+    let groups = collect_signing_groups(&psbt, fingerprint, coin);
+    let (purpose, account) = match groups.len() {
+        0 => {
+            return Err(format!(
+                "no PSBT input has a BIP32 derivation for fingerprint {fingerprint:x} \
+                 on chain {chain:?} (coin {coin})",
+            ))
+        }
+        1 => *groups.iter().next().unwrap(),
+        n => {
+            return Err(format!(
+                "PSBT spans {n} different (purpose, account) groups; hwi-rs currently \
+                 supports one Ledger wallet policy per signtx call",
+            ))
+        }
+    };
+
+    let acct_path: DerivationPath = format!("m/{purpose}h/{coin}h/{account}h")
+        .parse()
+        .map_err(|e| format!("path parse: {e}"))?;
+    let xpub = async_hwi::HWI::get_extended_pubkey(&device, &acct_path)
+        .await
+        .map_err(|e| format!("get_extended_pubkey({acct_path}): {e:?}"))?;
+    let policy = build_default_policy(purpose, fingerprint, coin, account, &xpub);
+    let device = device
+        .with_wallet("", &policy, None)
+        .map_err(|e| format!("with_wallet({policy}): {e:?}"))?;
+    async_hwi::HWI::sign_tx(&device, &mut psbt)
+        .await
+        .map_err(|e| format!("sign_tx({purpose}h/{coin}h/{account}h): {e:?}"))?;
+
+    let bytes = psbt.serialize();
+    let out = bitcoin::base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(serde_json::json!({ "psbt": out }).to_string())
 }

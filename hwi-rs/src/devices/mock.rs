@@ -14,6 +14,7 @@
 //! script that drives them, not in what the mock claims to be.
 
 use bitcoin::bip32::{DerivationPath, Fingerprint, Xpriv, Xpub};
+use bitcoin::psbt::Psbt;
 use bitcoin::secp256k1::Secp256k1;
 
 use crate::cli::Chain;
@@ -109,6 +110,28 @@ impl MockDevice {
         let address = address_from_descriptor(desc, chain)?;
         Ok(serde_json::json!({ "address": address }).to_string())
     }
+
+    pub fn signtx(
+        &self,
+        fingerprint: Fingerprint,
+        chain: Chain,
+        psbt_b64: &str,
+    ) -> Result<String, String> {
+        use bitcoin::base64::Engine as _;
+        self.require_fingerprint(fingerprint)?;
+        let raw = bitcoin::base64::engine::general_purpose::STANDARD
+            .decode(psbt_b64.trim())
+            .map_err(|e| format!("psbt base64 decode: {e}"))?;
+        let mut psbt = Psbt::deserialize(&raw).map_err(|e| format!("psbt parse: {e}"))?;
+        // psbt.sign returns Err iff at least one input failed; ignore the
+        // partial-failure case because Bitcoin Core only requires that the
+        // PSBT come back with as many partial sigs as we could provide.
+        let master = self.master(chain);
+        let _ = psbt.sign(&master, &self.secp);
+        let bytes = psbt.serialize();
+        let out = bitcoin::base64::engine::general_purpose::STANDARD.encode(bytes);
+        Ok(serde_json::json!({ "psbt": out }).to_string())
+    }
 }
 
 #[cfg(test)]
@@ -157,6 +180,78 @@ mod tests {
         assert_eq!(
             v["address"].as_str().unwrap(),
             "bc1qr583w2swedy2acd7rung055k8t3n7udp7vyzyg"
+        );
+    }
+
+    #[test]
+    fn mock_signtx_round_trips_empty_psbt() {
+        // Minimal valid PSBT (regtest, no inputs/outputs). The signer is a
+        // no-op on it but must round-trip cleanly.
+        let mock = mock();
+        let fp = mock.fingerprint();
+        let empty = "cHNidP8BAAoCAAAAAAAAAAAAAA==";
+        let json = mock.signtx(fp, Chain::Regtest, empty).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["psbt"].as_str().unwrap(), empty);
+    }
+
+    #[test]
+    fn mock_signtx_signs_wpkh_input_for_matching_derivation() {
+        use bitcoin::absolute::LockTime;
+        use bitcoin::bip32::DerivationPath;
+        use bitcoin::psbt::{Input, Psbt};
+        use bitcoin::secp256k1::Secp256k1;
+        use bitcoin::transaction::Version;
+        use bitcoin::{
+            Address, Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness,
+        };
+
+        let mock = mock();
+        let fp = mock.fingerprint();
+        let secp = Secp256k1::new();
+        // Derive the mock P2WPKH at m/84h/1h/0h/0/0 and synthesise a previous
+        // output paying to it, then build a single-input PSBT spending it.
+        let master = mock.master(Chain::Regtest);
+        let path: DerivationPath = "m/84h/1h/0h/0/0".parse().unwrap();
+        let xpriv = master.derive_priv(&secp, &path).unwrap();
+        let priv_key = bitcoin::PrivateKey::new(xpriv.private_key, bitcoin::Network::Regtest);
+        let cpk = bitcoin::CompressedPublicKey::from_private_key(&secp, &priv_key).unwrap();
+        let pk = bitcoin::PublicKey::new(cpk.0);
+        let addr = Address::p2wpkh(&cpk, bitcoin::Network::Regtest);
+
+        let prev = OutPoint::null();
+        let unsigned = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: prev,
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(50_000),
+                script_pubkey: addr.script_pubkey(),
+            }],
+        };
+        let mut psbt = Psbt::from_unsigned_tx(unsigned).unwrap();
+        let mut bip32 = std::collections::BTreeMap::new();
+        bip32.insert(pk.inner, (fp, path.clone()));
+        psbt.inputs[0] = Input {
+            witness_utxo: Some(TxOut {
+                value: Amount::from_sat(60_000),
+                script_pubkey: addr.script_pubkey(),
+            }),
+            bip32_derivation: bip32,
+            ..Input::default()
+        };
+
+        let json = mock.signtx(fp, Chain::Regtest, &psbt.to_string()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let signed: Psbt = v["psbt"].as_str().unwrap().parse().unwrap();
+        assert!(
+            !signed.inputs[0].partial_sigs.is_empty(),
+            "expected the mock to add a partial signature for the matching derivation"
         );
     }
 }

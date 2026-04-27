@@ -30,12 +30,18 @@ done
 
 DATADIR="$(mktemp -d)"
 SPECULOS_LOG="$DATADIR/speculos.log"
+AUTOPRESS_LOG="$DATADIR/autopress.log"
 RPCPORT=28443
 SIGNER="$REPO_ROOT/hwi-rs/tests/speculos-signer.sh"
 APDU_PORT=9999
+SPECULOS_API_PORT=5000
 
 cleanup() {
     "$BITCOIN_CLI" -regtest -datadir="$DATADIR" -rpcport="$RPCPORT" stop >/dev/null 2>&1 || true
+    if [[ -n "${AUTOPRESS_PID:-}" ]]; then
+        kill "$AUTOPRESS_PID" 2>/dev/null || true
+        wait "$AUTOPRESS_PID" 2>/dev/null || true
+    fi
     if [[ -n "${SPECULOS_PID:-}" ]]; then
         kill "$SPECULOS_PID" 2>/dev/null || true
         wait "$SPECULOS_PID" 2>/dev/null || true
@@ -50,6 +56,7 @@ echo "== launching speculos with $LEDGER_APP_ELF"
     --model nanox \
     --display headless \
     --apdu-port "$APDU_PORT" \
+    --api-port "$SPECULOS_API_PORT" \
     "$LEDGER_APP_ELF" \
     >"$SPECULOS_LOG" 2>&1 &
 SPECULOS_PID=$!
@@ -151,5 +158,49 @@ case "$ADDR" in
     bcrt1*) ;;  # bech32 / bech32m regtest
     *) echo "unexpected address format: $ADDR" >&2; exit 1 ;;
 esac
+
+echo "== fund the wallet so we have a UTXO to sign"
+"${CLI[@]}" generatetoaddress 101 "$ADDR" >/dev/null
+BURN="$("${CLI[@]}" -rpcwallet=hww getnewaddress)"
+FUND="$("${CLI[@]}" -rpcwallet=hww -named walletcreatefundedpsbt \
+    outputs="[{\"$BURN\":1.0}]" \
+    options='{"feeRate":0.00010000}')"
+PSBT="$(echo "$FUND" | python3 -c 'import json,sys;print(json.load(sys.stdin)["psbt"])')"
+echo "PSBT to sign: $PSBT"
+
+# Speculos's HTTP automation API exposes /button/{left,right,both} for
+# directional and confirm presses. The Bitcoin app prompts at several
+# steps (review, output amount, fee, confirm). We can't know the exact
+# screen sequence ahead of time, so spawn a background loop that just
+# spam-clicks the "right" (next/approve) button at a steady cadence
+# until walletprocesspsbt returns. This is the same trick HWI's CI uses.
+echo "== spawning autopress loop against speculos HTTP API"
+(
+    while true; do
+        curl -fsS -X POST "http://127.0.0.1:$SPECULOS_API_PORT/button/right" \
+            -H 'Content-Type: application/json' \
+            -d '{"action":"press-and-release"}' >/dev/null 2>&1 || true
+        curl -fsS -X POST "http://127.0.0.1:$SPECULOS_API_PORT/button/both" \
+            -H 'Content-Type: application/json' \
+            -d '{"action":"press-and-release"}' >/dev/null 2>&1 || true
+        sleep 0.4
+    done
+) >"$AUTOPRESS_LOG" 2>&1 &
+AUTOPRESS_PID=$!
+
+echo "== walletprocesspsbt (drives Core -> hwi-rs --stdin signtx -> speculos)"
+SIGNED="$("${CLI[@]}" -rpcwallet=hww walletprocesspsbt "$PSBT" true)"
+echo "$SIGNED"
+
+# Stop the autopress loop now that signing is done.
+kill "$AUTOPRESS_PID" 2>/dev/null || true
+wait "$AUTOPRESS_PID" 2>/dev/null || true
+AUTOPRESS_PID=""
+
+echo "$SIGNED" | python3 -c '
+import json, sys
+out = json.load(sys.stdin)
+assert out.get("complete") is True, f"PSBT not fully signed by device: {out!r}"
+'
 
 echo "== OK"

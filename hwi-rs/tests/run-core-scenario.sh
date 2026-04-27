@@ -94,4 +94,29 @@ want = '$ADDR'
 assert got == want, f'walletdisplayaddress returned {got!r}, expected {want!r}'
 "
 
+echo "== signtx via --stdin (empty PSBT round-trip)"
+EMPTY_PSBT="cHNidP8BAAoCAAAAAAAAAAAAAA=="
+SIGN_OUT="$(printf 'signtx %s\n' "$EMPTY_PSBT" \
+    | HWI_RS_MOCK=1 "$HWI_RS_BIN" --stdin --fingerprint 3442193e --chain regtest)"
+echo "$SIGN_OUT"
+echo "$SIGN_OUT" | python3 -c "
+import json, sys
+out = json.load(sys.stdin)
+assert out.get('psbt') == '$EMPTY_PSBT', out
+"
+
+echo "== fund wallet and sign a real PSBT through walletprocesspsbt"
+"${CLI[@]}" generatetoaddress 101 "$ADDR" >/dev/null
+BURN="$("${CLI[@]}" -rpcwallet=hww getnewaddress)"
+FUND="$("${CLI[@]}" -rpcwallet=hww -named walletcreatefundedpsbt \
+    outputs="[{\"$BURN\":1.0}]" \
+    options='{"feeRate":0.00010000}')"
+PSBT="$(echo "$FUND" | python3 -c 'import json,sys;print(json.load(sys.stdin)["psbt"])')"
+SIGNED="$("${CLI[@]}" -rpcwallet=hww walletprocesspsbt "$PSBT" true)"
+echo "$SIGNED" | python3 -c '
+import base64, json, sys
+out = json.load(sys.stdin)
+assert out.get("complete") is True, f"PSBT not fully signed: {out!r}"
+'
+
 echo "== OK"

@@ -9,8 +9,10 @@
 //! {change}/{index}` with the conventional purpose for the script type.
 //! Mirrors what Python HWI does in `_get_singlesig_default_wallet_policy`.
 
-use bitcoin::bip32::{ChildNumber, Fingerprint, Xpub};
+use bitcoin::bip32::{ChildNumber, DerivationPath, Fingerprint, Xpub};
+use bitcoin::psbt::Psbt;
 use miniscript::{descriptor::DescriptorType, Descriptor, DescriptorPublicKey};
+use std::collections::BTreeSet;
 
 use crate::descriptor::single_key_full_path;
 
@@ -119,6 +121,62 @@ pub fn classify_singlesig(
     })
 }
 
+/// Extract the (purpose, account) pair from a `m/p'/c'/a'/...` BIP32 path
+/// where `c == coin`. Returns `None` for paths that don't match the
+/// canonical BIP44 single-sig layout (so unknown / multisig / unrelated
+/// derivations are simply ignored).
+pub fn bip44_group(path: &DerivationPath, coin: u32) -> Option<(u32, u32)> {
+    let children: Vec<ChildNumber> = path.clone().into();
+    if children.len() < 3 {
+        return None;
+    }
+    let (p, c, a) = match (&children[0], &children[1], &children[2]) {
+        (
+            ChildNumber::Hardened { index: p },
+            ChildNumber::Hardened { index: c },
+            ChildNumber::Hardened { index: a },
+        ) => (*p, *c, *a),
+        _ => return None,
+    };
+    if c != coin {
+        return None;
+    }
+    if !matches!(p, 44 | 49 | 84 | 86) {
+        return None;
+    }
+    Some((p, a))
+}
+
+/// Walk a PSBT's input BIP32 derivations and group every key that belongs
+/// to `fingerprint` by its (purpose, account) pair. Each unique group is
+/// one Ledger wallet policy session that must sign.
+pub fn collect_signing_groups(
+    psbt: &Psbt,
+    fingerprint: Fingerprint,
+    chain_coin: u32,
+) -> BTreeSet<(u32, u32)> {
+    let mut out = BTreeSet::new();
+    for input in &psbt.inputs {
+        for (fp, path) in input.bip32_derivation.values() {
+            if *fp != fingerprint {
+                continue;
+            }
+            if let Some(g) = bip44_group(path, chain_coin) {
+                out.insert(g);
+            }
+        }
+        for (_leaf, (fp, path)) in input.tap_key_origins.values() {
+            if *fp != fingerprint {
+                continue;
+            }
+            if let Some(g) = bip44_group(path, chain_coin) {
+                out.insert(g);
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +212,19 @@ mod tests {
         )
         .unwrap();
         assert!(classify_singlesig(&d, 0).is_err());
+    }
+
+    #[test]
+    fn bip44_group_extracts_purpose_and_account() {
+        let p: DerivationPath = "m/84h/1h/3h/0/5".parse().unwrap();
+        assert_eq!(bip44_group(&p, 1), Some((84, 3)));
+        // Wrong coin → ignored.
+        assert_eq!(bip44_group(&p, 0), None);
+        // Unknown purpose → ignored.
+        let p2: DerivationPath = "m/45h/1h/0h/0/0".parse().unwrap();
+        assert_eq!(bip44_group(&p2, 1), None);
+        // Too short → ignored.
+        let p3: DerivationPath = "m/84h/1h".parse().unwrap();
+        assert_eq!(bip44_group(&p3, 1), None);
     }
 }

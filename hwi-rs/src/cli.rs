@@ -19,6 +19,13 @@ pub struct Args {
     #[arg(long, global = true, value_enum, default_value_t = Chain::Main)]
     pub chain: Chain,
 
+    /// Read the subcommand line from stdin instead of argv. Bitcoin Core
+    /// uses this for `signtx` to avoid putting a multi-kilobyte base64 PSBT
+    /// in argv. The first stdin line is parsed in the same shape as argv
+    /// would have been (e.g. `signtx <base64>`).
+    #[arg(long, global = true, default_value_t = false)]
+    pub stdin: bool,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -75,4 +82,9 @@ pub enum Command {
         #[arg(long)]
         desc: String,
     },
+
+    /// Sign a base64 PSBT and echo back the signed PSBT (also base64) as
+    /// `{"psbt": "..."}`. Typically read from stdin via `--stdin` since
+    /// PSBTs can be larger than the argv limit.
+    Signtx { psbt: String },
 }
