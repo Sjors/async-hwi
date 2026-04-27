@@ -13,10 +13,12 @@
 //! for. Per-device CI matrix entries differ only in the integration
 //! script that drives them, not in what the mock claims to be.
 
-use bitcoin::bip32::{Fingerprint, Xpriv};
+use bitcoin::bip32::{DerivationPath, Fingerprint, Xpriv, Xpub};
 use bitcoin::secp256k1::Secp256k1;
-use bitcoin::Network;
 
+use crate::cli::Chain;
+use crate::commands::GetDescriptorsOut;
+use crate::descriptor::{format_descriptor, ADDR_TYPES};
 use crate::devices::DeviceEntry;
 
 const MOCK_SEED: [u8; 16] = [
@@ -37,13 +39,23 @@ impl MockDevice {
         })
     }
 
-    fn master(&self) -> Xpriv {
-        Xpriv::new_master(Network::Bitcoin, &MOCK_SEED).expect("BIP32 master from fixed seed")
+    fn master(&self, chain: Chain) -> Xpriv {
+        Xpriv::new_master(chain.network(), &MOCK_SEED).expect("BIP32 master from fixed seed")
     }
 
     pub fn fingerprint(&self) -> Fingerprint {
         // Network does not affect the master fingerprint (hash160 of pubkey).
-        self.master().fingerprint(&self.secp)
+        self.master(Chain::Main).fingerprint(&self.secp)
+    }
+
+    fn require_fingerprint(&self, want: Fingerprint) -> Result<(), String> {
+        let have = self.fingerprint();
+        if have != want {
+            return Err(format!(
+                "no mock device matching fingerprint {want:x} (have {have:x})"
+            ));
+        }
+        Ok(())
     }
 
     pub fn enumerate(&self) -> Result<String, String> {
@@ -58,6 +70,33 @@ impl MockDevice {
             error: None,
         };
         serde_json::to_string(&[entry]).map_err(|e| e.to_string())
+    }
+
+    pub fn getdescriptors(
+        &self,
+        fingerprint: Fingerprint,
+        chain: Chain,
+        account: u32,
+    ) -> Result<String, String> {
+        self.require_fingerprint(fingerprint)?;
+        let master = self.master(chain);
+        let coin = chain.coin_type();
+        let mut receive = Vec::new();
+        let mut internal = Vec::new();
+        for &(purpose, wrapper) in ADDR_TYPES {
+            let path: DerivationPath = format!("m/{purpose}h/{coin}h/{account}h")
+                .parse()
+                .map_err(|e| format!("path parse: {e}"))?;
+            let xpriv = master
+                .derive_priv(&self.secp, &path)
+                .map_err(|e| format!("derive: {e}"))?;
+            let xpub = Xpub::from_priv(&self.secp, &xpriv);
+            let origin = format!("[{fingerprint:x}/{purpose}h/{coin}h/{account}h]");
+            receive.push(format_descriptor(wrapper, &origin, &xpub.to_string(), 0));
+            internal.push(format_descriptor(wrapper, &origin, &xpub.to_string(), 1));
+        }
+        let out = GetDescriptorsOut { receive, internal };
+        serde_json::to_string(&out).map_err(|e| e.to_string())
     }
 }
 
@@ -75,5 +114,25 @@ mod tests {
     fn mock_fingerprint_matches_bip32_vector_1() {
         // BIP32 test vector 1 master fingerprint.
         assert_eq!(format!("{:x}", mock().fingerprint()), "3442193e");
+    }
+
+    #[test]
+    fn mock_descriptors_use_requested_fingerprint() {
+        let mock = mock();
+        let fp = mock.fingerprint();
+        let json = mock.getdescriptors(fp, Chain::Regtest, 0).unwrap();
+        let parsed: GetDescriptorsOut = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.receive.len(), 4);
+        assert_eq!(parsed.internal.len(), 4);
+        let prefix_h = format!("pkh([{fp:x}/44h/1h/0h]");
+        let prefix_q = format!("pkh([{fp:x}/44'/1'/0']");
+        assert!(
+            parsed.receive[0].starts_with(&prefix_h) || parsed.receive[0].starts_with(&prefix_q),
+            "got {}",
+            parsed.receive[0]
+        );
+        for d in parsed.receive.iter().chain(parsed.internal.iter()) {
+            assert!(d.contains('#'), "missing checksum: {}", d);
+        }
     }
 }

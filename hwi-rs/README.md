@@ -15,6 +15,7 @@ wired up.
 | Subcommand                          | Status   | Notes |
 | ----------------------------------- | -------- | ----- |
 | `enumerate`                         | ✅       | Outputs the HWI JSON shape on stdout. |
+| `getdescriptors --account <n>`      | ✅       | Returns `{"receive": [...], "internal": [...]}` (BIP44/49/84/86). |
 
 ### Supported devices
 

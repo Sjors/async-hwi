@@ -60,4 +60,28 @@ assert len(signers) == 1, f"expected exactly one signer, got {signers!r}"
 assert signers[0].get("fingerprint") == "3442193e", signers
 '
 
+echo "== createwallet (external_signer=true, regtest)"
+"${CLI[@]}" -named createwallet \
+    wallet_name=hww \
+    disable_private_keys=true \
+    blank=true \
+    descriptors=true \
+    external_signer=true
+
+echo "== getwalletinfo"
+WI="$("${CLI[@]}" -rpcwallet=hww getwalletinfo)"
+echo "$WI" | python3 -c '
+import json, sys
+w = json.load(sys.stdin)
+assert w.get("external_signer") is True, f"external_signer flag not set: {w!r}"
+'
+
+echo "== getnewaddress (must derive locally from imported descriptors)"
+ADDR="$("${CLI[@]}" -rpcwallet=hww getnewaddress)"
+echo "$ADDR"
+case "$ADDR" in
+    bcrt1*) ;;  # bech32 regtest address
+    *) echo "unexpected address format: $ADDR" >&2; exit 1 ;;
+esac
+
 echo "== OK"

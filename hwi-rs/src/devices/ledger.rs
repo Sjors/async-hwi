@@ -1,10 +1,15 @@
 //! Ledger device support.
 //!
-//! Covers HID enumeration helpers shared by the per-subcommand dispatch
-//! modules. The new Ledger Bitcoin app is the only firmware supported;
-//! the legacy app is not.
+//! Covers HID enumeration and the transport-agnostic protocol bodies
+//! shared between the HID and Speculos transports. The new Ledger
+//! Bitcoin app is the only firmware supported; the legacy app is not.
 
-use async_hwi::ledger::DeviceInfo;
+use async_hwi::ledger::{DeviceInfo, HidApi, Ledger, Transport, TransportHID};
+use bitcoin::bip32::{DerivationPath, Fingerprint};
+
+use crate::cli::Chain;
+use crate::commands::GetDescriptorsOut;
+use crate::descriptor::{format_descriptor, ADDR_TYPES};
 
 pub const LEDGER_VENDOR_ID: u16 = 0x2c97;
 
@@ -34,4 +39,68 @@ pub fn ledger_model(product_id: u16) -> Option<&'static str> {
 /// (mirrors HWI's filter).
 pub fn ledger_iface_ok(info: &DeviceInfo) -> bool {
     info.interface_number() == 0 || info.usage_page() == 0xffa0
+}
+
+/// Find an HID-attached Ledger whose master fingerprint matches `want`.
+pub async fn open_ledger_by_fingerprint(
+    api: &HidApi,
+    want: Fingerprint,
+) -> Result<Ledger<TransportHID>, String> {
+    for info in api.device_list() {
+        if info.vendor_id() != LEDGER_VENDOR_ID {
+            continue;
+        }
+        if !ledger_iface_ok(info) {
+            continue;
+        }
+        if ledger_model(info.product_id()).is_none() {
+            continue;
+        }
+        let Ok(device) = Ledger::<TransportHID>::connect(api, info) else {
+            continue;
+        };
+        match async_hwi::HWI::get_master_fingerprint(&device).await {
+            Ok(fp) if fp == want => return Ok(device),
+            _ => continue,
+        }
+    }
+    Err(format!("no Ledger device matching fingerprint {want:x}"))
+}
+
+// --- transport-agnostic protocol bodies --------------------------------------
+
+pub async fn do_getdescriptors<T: Transport + Send + Sync>(
+    device: &Ledger<T>,
+    fingerprint: Fingerprint,
+    chain: Chain,
+    account: u32,
+) -> Result<String, String> {
+    let mut receive = Vec::new();
+    let mut internal = Vec::new();
+
+    for &(purpose, wrapper) in ADDR_TYPES {
+        let base_path = format!("m/{purpose}h/{}h/{account}h", chain.coin_type());
+        let derivation: DerivationPath =
+            base_path.parse().map_err(|e| format!("path parse: {e}"))?;
+
+        // If the device cannot derive a given purpose (e.g. older Ledger app
+        // not supporting taproot), skip that address type and continue.
+        let xpub = match async_hwi::HWI::get_extended_pubkey(device, &derivation).await {
+            Ok(x) => x,
+            Err(_) => continue,
+        };
+
+        let origin = format!(
+            "[{:x}/{}h/{}h/{account}h]",
+            fingerprint,
+            purpose,
+            chain.coin_type()
+        );
+
+        receive.push(format_descriptor(wrapper, &origin, &xpub.to_string(), 0));
+        internal.push(format_descriptor(wrapper, &origin, &xpub.to_string(), 1));
+    }
+
+    let out = GetDescriptorsOut { receive, internal };
+    serde_json::to_string(&out).map_err(|e| e.to_string())
 }
