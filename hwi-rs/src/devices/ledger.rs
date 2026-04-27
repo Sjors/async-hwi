@@ -6,10 +6,12 @@
 
 use async_hwi::ledger::{DeviceInfo, HidApi, Ledger, Transport, TransportHID};
 use bitcoin::bip32::{DerivationPath, Fingerprint};
+use miniscript::{Descriptor, DescriptorPublicKey};
 
 use crate::cli::Chain;
 use crate::commands::GetDescriptorsOut;
-use crate::descriptor::{format_descriptor, ADDR_TYPES};
+use crate::descriptor::{address_from_descriptor, format_descriptor, ADDR_TYPES};
+use crate::policy::{build_default_policy, classify_singlesig, SingleSig};
 
 pub const LEDGER_VENDOR_ID: u16 = 0x2c97;
 
@@ -103,4 +105,48 @@ pub async fn do_getdescriptors<T: Transport + Send + Sync>(
 
     let out = GetDescriptorsOut { receive, internal };
     serde_json::to_string(&out).map_err(|e| e.to_string())
+}
+
+/// All four single-sig flavours go through the same path: build the
+/// matching default Ledger Bitcoin app wallet policy on the fly, attach
+/// it to the device session with `wallet_hmac=None`, and ask the device
+/// to display the address. The new app recognises the four templates
+/// `pkh(@0/**)`, `sh(wpkh(@0/**))`, `wpkh(@0/**)`, `tr(@0/**)` without
+/// prior on-device registration. Mirrors what Python HWI does.
+pub async fn do_displayaddress<T: Transport + Send + Sync>(
+    device: Ledger<T>,
+    fingerprint: Fingerprint,
+    chain: Chain,
+    desc: &str,
+) -> Result<String, String> {
+    use async_hwi::AddressScript;
+
+    let parsed: Descriptor<DescriptorPublicKey> =
+        desc.parse().map_err(|e| format!("descriptor parse: {e}"))?;
+    let address = address_from_descriptor(desc, chain)?;
+
+    let SingleSig {
+        purpose,
+        account,
+        change,
+        index,
+    } = classify_singlesig(&parsed, chain.coin_type())?;
+
+    let coin = chain.coin_type();
+    let acct_path: DerivationPath = format!("m/{purpose}h/{coin}h/{account}h")
+        .parse()
+        .map_err(|e| format!("path parse: {e}"))?;
+    let xpub = async_hwi::HWI::get_extended_pubkey(&device, &acct_path)
+        .await
+        .map_err(|e| format!("get_extended_pubkey({acct_path}): {e:?}"))?;
+    let policy = build_default_policy(purpose, fingerprint, coin, account, &xpub);
+
+    let device = device
+        .with_wallet("", &policy, None)
+        .map_err(|e| format!("with_wallet({policy}): {e:?}"))?;
+    async_hwi::HWI::display_address(&device, &AddressScript::Miniscript { index, change })
+        .await
+        .map_err(|e| format!("display_address: {e:?}"))?;
+
+    Ok(serde_json::json!({ "address": address }).to_string())
 }

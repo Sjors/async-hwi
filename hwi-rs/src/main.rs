@@ -6,19 +6,22 @@
 //!
 //! Currently supported:
 //!   * device:      Ledger (new app only; legacy not supported)
-//!   * subcommands: `enumerate`, `getdescriptors`
+//!   * subcommands: `enumerate`, `getdescriptors`, `displayaddress`
 //!
 //! Source layout:
 //!   * [`cli`] — argv parsing
 //!   * [`devices`] — per-device modules (ledger, mock); enumeration,
 //!     transport-agnostic protocol bodies, JSON shape
-//!   * [`descriptor`] — checksummed descriptor construction
+//!   * [`descriptor`] — definite-descriptor inspection + BIP380 checksum
+//!   * [`policy`] — mapping descriptors to Ledger default single-sig
+//!     wallet policies
 //!   * [`commands`] — per-subcommand `run_*` dispatch (mock → simulator → HID)
 
 mod cli;
 mod commands;
 mod descriptor;
 mod devices;
+mod policy;
 
 use std::process::ExitCode;
 
@@ -39,6 +42,10 @@ async fn main() -> ExitCode {
         Command::Enumerate => commands::run_enumerate().await,
         Command::Getdescriptors { account } => match args.fingerprint {
             Some(fp) => commands::run_getdescriptors(fp, args.chain, account).await,
+            None => Err("a fingerprint is required for this command".into()),
+        },
+        Command::Displayaddress { desc } => match args.fingerprint {
+            Some(fp) => commands::run_displayaddress(fp, args.chain, &desc).await,
             None => Err("a fingerprint is required for this command".into()),
         },
     };

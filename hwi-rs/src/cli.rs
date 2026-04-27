@@ -66,4 +66,13 @@ pub enum Command {
         #[arg(long, default_value_t = 0)]
         account: u32,
     },
+
+    /// Display an address derived from the given descriptor on the device,
+    /// and echo it back as `{"address": "..."}`. The descriptor is the one
+    /// Bitcoin Core produces via `InferDescriptor` for a single scriptPubKey,
+    /// so it has no wildcards.
+    Displayaddress {
+        #[arg(long)]
+        desc: String,
+    },
 }

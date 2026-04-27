@@ -18,7 +18,7 @@ use bitcoin::secp256k1::Secp256k1;
 
 use crate::cli::Chain;
 use crate::commands::GetDescriptorsOut;
-use crate::descriptor::{format_descriptor, ADDR_TYPES};
+use crate::descriptor::{address_from_descriptor, format_descriptor, ADDR_TYPES};
 use crate::devices::DeviceEntry;
 
 const MOCK_SEED: [u8; 16] = [
@@ -98,6 +98,17 @@ impl MockDevice {
         let out = GetDescriptorsOut { receive, internal };
         serde_json::to_string(&out).map_err(|e| e.to_string())
     }
+
+    pub fn displayaddress(
+        &self,
+        fingerprint: Fingerprint,
+        chain: Chain,
+        desc: &str,
+    ) -> Result<String, String> {
+        self.require_fingerprint(fingerprint)?;
+        let address = address_from_descriptor(desc, chain)?;
+        Ok(serde_json::json!({ "address": address }).to_string())
+    }
 }
 
 #[cfg(test)]
@@ -134,5 +145,18 @@ mod tests {
         for d in parsed.receive.iter().chain(parsed.internal.iter()) {
             assert!(d.contains('#'), "missing checksum: {}", d);
         }
+    }
+
+    #[test]
+    fn mock_displayaddress_echoes_descriptor_address() {
+        let mock = mock();
+        let fp = mock.fingerprint();
+        let desc = "wpkh([00000001/84h/0h/0h/0/0]025476c2e83188368da1ff3e292e7acafcdb3566bb0ad253f62fc70f07aeee6357)";
+        let json = mock.displayaddress(fp, Chain::Main, desc).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            v["address"].as_str().unwrap(),
+            "bc1qr583w2swedy2acd7rung055k8t3n7udp7vyzyg"
+        );
     }
 }

@@ -84,4 +84,14 @@ case "$ADDR" in
     *) echo "unexpected address format: $ADDR" >&2; exit 1 ;;
 esac
 
+echo "== walletdisplayaddress (echoes back via signer)"
+DISP="$("${CLI[@]}" -rpcwallet=hww walletdisplayaddress "$ADDR")"
+echo "$DISP"
+echo "$DISP" | python3 -c "
+import json, sys
+got = json.load(sys.stdin).get('address')
+want = '$ADDR'
+assert got == want, f'walletdisplayaddress returned {got!r}, expected {want!r}'
+"
+
 echo "== OK"

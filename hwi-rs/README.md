@@ -16,6 +16,7 @@ wired up.
 | ----------------------------------- | -------- | ----- |
 | `enumerate`                         | ✅       | Outputs the HWI JSON shape on stdout. |
 | `getdescriptors --account <n>`      | ✅       | Returns `{"receive": [...], "internal": [...]}` (BIP44/49/84/86). |
+| `displayaddress --desc <descriptor>`| ✅       | Shows the address on-device; echoes `{"address": "..."}`. |
 
 ### Supported devices
 
