@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "cli"]
+members = [".", "cli", "hwi-rs"]
 
 [workspace.package]
 edition = "2018"

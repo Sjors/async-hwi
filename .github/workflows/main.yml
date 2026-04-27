@@ -211,3 +211,37 @@ jobs:
             bitcoin-core/build/bin/bitcoin-cli
           if-no-files-found: error
           retention-days: 1
+
+  # ----------------------------------------------------------------------------
+  # Build the hwi-rs binary in release mode once and upload it as an artifact
+  # for downstream end-to-end jobs to consume. Sanity-check that the binary
+  # at least runs (`--help`).
+  # ----------------------------------------------------------------------------
+  hwi_rs_builder:
+    name: hwi-rs builder
+    runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: 1.85.0
+          cache: false
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+      - name: Build hwi-rs (release)
+        run: cargo build -p hwi-rs --release
+      - name: Smoke-test hwi-rs --help
+        run: ./target/release/hwi-rs --help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hwi-rs
+          path: target/release/hwi-rs
+          if-no-files-found: error
+          retention-days: 1

@@ -56,3 +56,10 @@ A Empty case means the method is unimplemented on the client or device side.
 The `service` module provides automatic device discovery and management with support
 for multiple concurrent consumers. See [SERVICE.md](SERVICE.md) for detailed
 documentation and usage examples.
+
+## Bitcoin Core external signer (`hwi-rs`)
+
+The [`hwi-rs/`](hwi-rs/) crate provides a minimal CLI compatible with the
+Python [HWI](https://github.com/bitcoin-core/HWI) interface that Bitcoin Core
+calls via `-signer=<cmd>`. See [hwi-rs/README.md](hwi-rs/README.md) for build
+and usage instructions.

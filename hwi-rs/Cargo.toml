@@ -1,0 +1,15 @@
+[package]
+name = "hwi-rs"
+description = "Bitcoin Core compatible external-signer (HWI-style) CLI built on async-hwi"
+version = "0.0.1"
+license-file.workspace = true
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "hwi-rs"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.4", features = ["derive"] }
