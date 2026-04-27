@@ -149,3 +149,65 @@ jobs:
       - name: Dump speculos log on failure
         if: failure()
         run: tail -n 200 /tmp/speculos/speculos.log || true
+
+  # ----------------------------------------------------------------------------
+  # Build bitcoind + bitcoin-cli once (regtest, wallet-enabled) and upload
+  # them as an artifact for downstream end-to-end jobs to consume. Runs in
+  # parallel with linter / unit_tests / ledger_app so it never sits on the
+  # critical path.
+  # ----------------------------------------------------------------------------
+  bitcoind_builder:
+    name: bitcoind builder
+    runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: 'true'
+      BITCOIN_CORE_REF: v31.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bitcoin Core build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake pkgconf python3 \
+            libevent-dev libboost-dev ccache \
+            capnproto libcapnp-dev \
+            libsqlite3-dev
+
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-bitcoin-${{ env.BITCOIN_CORE_REF }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-bitcoin-${{ env.BITCOIN_CORE_REF }}-
+            ccache-${{ runner.os }}-bitcoin-
+
+      - name: Checkout Bitcoin Core
+        run: git clone --depth 1 --branch "$BITCOIN_CORE_REF" https://github.com/bitcoin/bitcoin.git bitcoin-core
+
+      - name: Build Bitcoin Core (wallet enabled)
+        run: |
+          cd bitcoin-core
+          cmake -B build \
+            -DENABLE_WALLET=ON \
+            -DBUILD_TESTS=OFF \
+            -DBUILD_BENCH=OFF \
+            -DBUILD_GUI=OFF \
+            -DBUILD_TX=OFF \
+            -DBUILD_UTIL=OFF \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build -j "$(nproc)" --target bitcoind bitcoin-cli
+
+      - name: Upload bitcoind artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitcoind
+          path: |
+            bitcoin-core/build/bin/bitcoind
+            bitcoin-core/build/bin/bitcoin-cli
+          if-no-files-found: error
+          retention-days: 1
