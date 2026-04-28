@@ -100,6 +100,22 @@ impl MockDevice {
         serde_json::to_string(&out).map_err(|e| e.to_string())
     }
 
+    pub fn getxpub(
+        &self,
+        fingerprint: Fingerprint,
+        chain: Chain,
+        path: &str,
+    ) -> Result<String, String> {
+        self.require_fingerprint(fingerprint)?;
+        let derivation: DerivationPath = path.parse().map_err(|e| format!("path parse: {e}"))?;
+        let master = self.master(chain);
+        let xpriv = master
+            .derive_priv(&self.secp, &derivation)
+            .map_err(|e| format!("derive: {e}"))?;
+        let xpub = Xpub::from_priv(&self.secp, &xpriv);
+        Ok(serde_json::json!({ "xpub": xpub.to_string() }).to_string())
+    }
+
     pub fn displayaddress(
         &self,
         fingerprint: Fingerprint,

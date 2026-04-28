@@ -16,6 +16,7 @@ wired up.
 | ----------------------------------- | -------- | ----- |
 | `enumerate`                         | ✅       | Outputs the HWI JSON shape on stdout. |
 | `getdescriptors --account <n>`      | ✅       | Returns `{"receive": [...], "internal": [...]}` (BIP44/49/84/86). |
+| `getxpub <path>`                    | ✅       | Returns `{"xpub": "..."}` for a custom BIP32 path (e.g. `m/48'/1'/0'/2'`). |
 | `displayaddress --desc <descriptor>`| ✅       | Shows the address on-device; echoes `{"address": "..."}`. |
 | `signtx <base64-psbt>`              | ✅       | Signs a PSBT and returns `{"psbt": "..."}`. Use `--stdin` for large PSBTs. |
 

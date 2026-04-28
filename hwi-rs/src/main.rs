@@ -53,6 +53,10 @@ async fn main() -> ExitCode {
             Some(fp) => commands::run_getdescriptors(fp, args.chain, account).await,
             None => Err("a fingerprint is required for this command".into()),
         },
+        Command::Getxpub { path } => match args.fingerprint {
+            Some(fp) => commands::run_getxpub(fp, args.chain, &path).await,
+            None => Err("a fingerprint is required for this command".into()),
+        },
         Command::Displayaddress { desc } => match args.fingerprint {
             Some(fp) => commands::run_displayaddress(fp, args.chain, &desc).await,
             None => Err("a fingerprint is required for this command".into()),

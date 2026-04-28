@@ -8,7 +8,7 @@ use bitcoin::{bip32::Fingerprint, Network};
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version, about, long_about = None, max_term_width = 100)]
 pub struct Args {
     /// Master fingerprint of the device to act on (hex). Required for all
     /// subcommands except `enumerate`.
@@ -72,6 +72,16 @@ pub enum Command {
     Getdescriptors {
         #[arg(long, default_value_t = 0)]
         account: u32,
+    },
+
+    /// Get the extended public key derived at the given BIP32 path,
+    /// echoed back as `{"xpub": "..."}`. Mirrors HWI's `getxpub`. Useful
+    /// for fetching custom-path keys (e.g. BIP87 multisig account keys
+    /// at `m/87'/1'/0'`) that `getdescriptors` does not cover.
+    Getxpub {
+        /// BIP32 derivation path (e.g. `m/87'/1'/0'` or
+        /// `m/87h/1h/0h`).
+        path: String,
     },
 
     /// Display an address derived from the given descriptor on the device,

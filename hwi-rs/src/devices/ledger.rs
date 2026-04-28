@@ -108,6 +108,21 @@ pub async fn do_getdescriptors<T: Transport + Send + Sync>(
     serde_json::to_string(&out).map_err(|e| e.to_string())
 }
 
+/// Fetch the xpub at `path` from the device. Mirrors HWI's `getxpub`:
+/// `{"xpub": "<base58>"}`. The fingerprint is only used at the open
+/// stage (HID/simulator); the device itself derives from whatever seed
+/// it holds, so we don't re-check the master fingerprint here.
+pub async fn do_getxpub<T: Transport + Send + Sync>(
+    device: &Ledger<T>,
+    path: &str,
+) -> Result<String, String> {
+    let derivation: DerivationPath = path.parse().map_err(|e| format!("path parse: {e}"))?;
+    let xpub = async_hwi::HWI::get_extended_pubkey(device, &derivation)
+        .await
+        .map_err(|e| format!("get_extended_pubkey({derivation}): {e:?}"))?;
+    Ok(serde_json::json!({ "xpub": xpub.to_string() }).to_string())
+}
+
 /// All four single-sig flavours go through the same path: build the
 /// matching default Ledger Bitcoin app wallet policy on the fly, attach
 /// it to the device session with `wallet_hmac=None`, and ask the device
