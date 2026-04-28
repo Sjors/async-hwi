@@ -200,9 +200,8 @@ impl<T: Transport + Sync + Send> HWI for Ledger<T> {
             let yielded_objects = self.client.sign_psbt(psbt, policy, hmac.as_ref()).await?;
             for (i, obj) in yielded_objects {
                 let input = psbt.inputs.get_mut(i).ok_or(HWIError::DeviceDidNotSign)?;
-                // Ignore MuSig2 and unknown payloads.
-                if let SignPsbtYieldedObject::Partial(sig) = obj {
-                    match sig {
+                match obj {
+                    SignPsbtYieldedObject::Partial(sig) => match sig {
                         PartialSignature::Sig(key, sig) => {
                             input.partial_sigs.insert(key, sig);
                         }
@@ -212,7 +211,38 @@ impl<T: Transport + Sync + Send> HWI for Ledger<T> {
                         PartialSignature::TapScriptSig(_, None, sig) => {
                             input.tap_key_sig = Some(sig);
                         }
+                    },
+                    SignPsbtYieldedObject::MusigPubNonce(n) => {
+                        let mut key_data = Vec::with_capacity(33 + 33 + 32);
+                        key_data.extend_from_slice(&n.participant_pubkey.to_bytes());
+                        key_data.extend_from_slice(&n.aggregate_pubkey.to_bytes());
+                        if let Some(h) = n.tapleaf_hash {
+                            key_data.extend_from_slice(h.as_ref());
+                        }
+                        input.unknown.insert(
+                            bitcoin::psbt::raw::Key {
+                                type_value: PSBT_IN_MUSIG2_PUB_NONCE,
+                                key: key_data,
+                            },
+                            n.pubnonce.to_vec(),
+                        );
                     }
+                    SignPsbtYieldedObject::MusigPartialSignature(s) => {
+                        let mut key_data = Vec::with_capacity(33 + 33 + 32);
+                        key_data.extend_from_slice(&s.participant_pubkey.to_bytes());
+                        key_data.extend_from_slice(&s.aggregate_pubkey.to_bytes());
+                        if let Some(h) = s.tapleaf_hash {
+                            key_data.extend_from_slice(h.as_ref());
+                        }
+                        input.unknown.insert(
+                            bitcoin::psbt::raw::Key {
+                                type_value: PSBT_IN_MUSIG2_PARTIAL_SIG,
+                                key: key_data,
+                            },
+                            s.partial_signature.to_vec(),
+                        );
+                    }
+                    _ => {} // Ignore unknown payloads.
                 }
             }
             Ok(())
@@ -222,6 +252,11 @@ impl<T: Transport + Sync + Send> HWI for Ledger<T> {
         }
     }
 }
+
+/// PSBT input field type for `PSBT_IN_MUSIG2_PUB_NONCE` (BIP-373).
+const PSBT_IN_MUSIG2_PUB_NONCE: u8 = 0x1B;
+/// PSBT input field type for `PSBT_IN_MUSIG2_PARTIAL_SIG` (BIP-373).
+const PSBT_IN_MUSIG2_PARTIAL_SIG: u8 = 0x1C;
 
 fn key_string_from_parts(fg: Fingerprint, path: DerivationPath, xpub: Xpub) -> String {
     format!(
