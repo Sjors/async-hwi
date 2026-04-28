@@ -91,6 +91,11 @@ See
 [`doc/external-signer.md`](https://github.com/bitcoin/bitcoin/blob/master/doc/external-signer.md)
 in Bitcoin Core for the full protocol.
 
+For a worked end-to-end MuSig2 (BIP388) walkthrough — building Sjors's
+`2025/06/musig2-power` branch, exporting cosigner keys, importing the
+multipath descriptor, registering the policy on-device and displaying an
+address — see [`USAGE.md`](USAGE.md).
+
 ## Why a separate binary?
 
 [`async-hwi-cli`](../cli/) (`hwi`) is a developer/debugging tool with an
