@@ -385,3 +385,38 @@ jobs:
         run: |
           find /tmp -maxdepth 4 -name 'coldcard-sim.log' -print -exec tail -n 200 {} \; 2>/dev/null || true
 
+  # ----------------------------------------------------------------------------
+  # Drive hwi-rs's MuSig2/BIP388 paths against speculos through Bitcoin Core's
+  # external_signer interface. Mirrors speculos_integration but exercises
+  # registerpolicy and policy-mode displayaddress instead of the single-sig
+  # flow. Reuses the same bitcoind artifact (which already tracks Sjors's
+  # MuSig2 branch via bitcoind_builder). The scenario script itself is grown
+  # incrementally across the commits that introduce each new subcommand.
+  # ----------------------------------------------------------------------------
+  speculos_musig_integration:
+    name: integration (speculos ledger, musig)
+    needs: [bitcoind_builder, ledger_app, hwi_rs_builder]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libevent-dev libcapnp-1.0.1
+
+      - uses: ./.github/actions/setup-bitcoind
+      - uses: ./.github/actions/setup-hwi-rs
+      - uses: ./.github/actions/setup-ledger-speculos
+
+      - name: MuSig2 scenario (regtest, speculos)
+        env:
+          LEDGER_APP_ELF: ${{ github.workspace }}/ledger_app/app.elf
+          SPECULOS: speculos
+        run: bash hwi-rs/tests/run-musig-scenario-speculos.sh
+
+      - name: Dump speculos log on failure
+        if: failure()
+        run: |
+          find /tmp -maxdepth 4 -name 'speculos.log' -print -exec tail -n 200 {} \; 2>/dev/null || true

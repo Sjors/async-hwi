@@ -136,10 +136,15 @@ if [[ "$FP_CORE" != "$FP" ]]; then
 fi
 
 echo "== createwallet (external_signer=true, regtest)"
+# Not blank: as of Sjors's 2025/07/external-signer-relax (commit
+# b990dbb504 "wallet: don't import external keys at creation if
+# blank"), `blank=true` skips fetching descriptors from the external
+# signer entirely, and `getnewaddress` then fails with "no available
+# keys". Letting Core seed the wallet at creation time keeps the
+# single-sig flow simple.
 "${CLI[@]}" -named createwallet \
     wallet_name=hww \
     disable_private_keys=true \
-    blank=true \
     descriptors=true \
     external_signer=true
 
