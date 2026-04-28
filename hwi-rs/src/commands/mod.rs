@@ -20,7 +20,7 @@ pub use enumerate::run_enumerate;
 pub use getdescriptors::run_getdescriptors;
 pub use getxpub::run_getxpub;
 pub use register::run_register;
-pub use signtx::run_signtx;
+pub use signtx::{run_signtx, SignTxReq};
 
 #[derive(Serialize, Deserialize)]
 pub struct GetDescriptorsOut {
@@ -48,9 +48,16 @@ pub fn read_stdin_command(base: &crate::cli::Args) -> Result<crate::cli::Args, S
         .map_err(|e| format!("stdin read: {e}"))?;
     let line = line.trim_end_matches(['\r', '\n']);
 
-    // shell-words splits the line into argv-style tokens and treats
-    // quotes the same way the shell would. Re-prepend a fake binary
-    // name so clap's positional parsing matches the argv flow.
+    // Split the stdin line on whitespace into argv-style tokens. We
+    // intentionally do NOT use shell-style quote handling here:
+    // BIP32-style key origin paths like `[fp/87'/1'/0']tpubD...` embed
+    // single quotes that a shell tokeniser would treat as quotes,
+    // mangling subsequent `--key`/`--policy-desc` arguments. None of
+    // the values we exchange contain whitespace (PSBTs are base64,
+    // descriptors and keys never contain spaces), so a plain
+    // whitespace split is both correct and unambiguous. Re-prepend a
+    // fake binary name so clap's positional parsing matches the argv
+    // flow.
     let mut argv: Vec<String> = vec!["hwi-rs".to_string()];
     if let Some(fp) = base.fingerprint {
         argv.push("--fingerprint".into());
@@ -58,7 +65,7 @@ pub fn read_stdin_command(base: &crate::cli::Args) -> Result<crate::cli::Args, S
     }
     argv.push("--chain".into());
     argv.push(format!("{:?}", base.chain).to_lowercase());
-    argv.extend(shell_words::split(line).map_err(|e| format!("stdin command parse: {e}"))?);
+    argv.extend(line.split_whitespace().map(str::to_string));
 
     crate::cli::Args::try_parse_from(argv).map_err(|e| format!("stdin args parse: {e}"))
 }

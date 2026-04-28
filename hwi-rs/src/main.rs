@@ -97,8 +97,33 @@ async fn main() -> ExitCode {
             Some(fp) => commands::run_register(fp, args.chain, &name, &desc, &key).await,
             None => Err("a fingerprint is required for this command".into()),
         },
-        Command::Signtx { psbt } => match args.fingerprint {
-            Some(fp) => commands::run_signtx(fp, args.chain, &psbt).await,
+        Command::Signtx {
+            psbt,
+            policy_name,
+            policy_desc,
+            key,
+            hmac,
+        } => match args.fingerprint {
+            Some(fp) => {
+                let req = match (policy_name, policy_desc, hmac) {
+                    (None, None, None) => commands::SignTxReq::Default { psbt },
+                    (Some(name), Some(template), Some(hmac)) => commands::SignTxReq::Policy {
+                        psbt,
+                        name,
+                        template,
+                        keys: key,
+                        hmac,
+                    },
+                    _ => {
+                        return commands::emit_error(
+                            "signtx requires either no policy flags, or all of \
+                             --policy-name --policy-desc --key --hmac"
+                                .into(),
+                        )
+                    }
+                };
+                commands::run_signtx(fp, args.chain, req).await
+            }
             None => Err("a fingerprint is required for this command".into()),
         },
     };

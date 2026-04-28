@@ -66,7 +66,11 @@ cleanup() {
         wait "$SPECULOS_PID" 2>/dev/null || true
     fi
     sleep 1
-    rm -rf "$DATADIR"
+    if [[ -z "${KEEP_DATADIR:-}" ]]; then
+        rm -rf "$DATADIR"
+    else
+        echo "KEEP_DATADIR set; leaving $DATADIR in place" >&2
+    fi
 }
 trap cleanup EXIT
 
@@ -286,3 +290,65 @@ WDA_ADDR="$(echo "$WDA_OUT" | python3 -c 'import json,sys; print(json.loads(sys.
 [[ "$WDA_ADDR" == "$ADDR" ]] || { echo "walletdisplayaddress echoed unexpected address: $WDA_ADDR" >&2; exit 1; }
 
 echo "== OK: drove on-device address display for the registered MuSig2 policy"
+
+# ---------------------------------------------------------------------
+# Funding + MuSig2 spend round-trip.
+#
+# Prove that walletprocesspsbt routes through the new BIP388-aware
+# FillPSBTPolicy path: round 1 produces both cosigners' MuSig2 pub
+# nonces, round 2 produces both partial signatures, finalizepsbt
+# aggregates them into a Schnorr key-path signature, and the resulting
+# transaction is accepted by bitcoind regtest.
+# ---------------------------------------------------------------------
+
+echo "== creating helper miner wallet (no external signer)"
+"${CLI[@]}" -named createwallet \
+    wallet_name=miner \
+    descriptors=true \
+    blank=false >/dev/null
+MCLI=("${CLI[@]}" -rpcwallet=miner)
+
+echo "== mining 101 blocks to miner so it has spendable coinbase"
+MINER_ADDR="$("${MCLI[@]}" getnewaddress "" bech32m)"
+"${MCLI[@]}" generatetoaddress 101 "$MINER_ADDR" >/dev/null
+
+echo "== funding musig_hww receive address $ADDR with 1.0 BTC"
+FUND_TXID="$("${MCLI[@]}" -named sendtoaddress address="$ADDR" amount=1.0)"
+echo "fund txid: $FUND_TXID"
+"${MCLI[@]}" generatetoaddress 1 "$MINER_ADDR" >/dev/null
+
+# Sanity: musig_hww should now see the UTXO.
+BAL="$("${WCLI[@]}" getbalance)"
+echo "musig_hww balance: $BAL"
+python3 - <<PY
+b = float("$BAL")
+assert b >= 0.999, f"unexpected musig_hww balance: {b}"
+PY
+
+# Spend back to a fresh address owned by the miner wallet (cleanest
+# regtest-valid destination).
+DEST_ADDR="$("${MCLI[@]}" getnewaddress "" bech32m)"
+
+echo "== send (single call: expect both rounds to run, complete=true)"
+# With the FinishTransaction prototype, `send` calls FillPSBT(sign=true)
+# twice when the first pass leaves the PSBT incomplete. Round 1 produces
+# nonces, round 2 produces partial sigs, FillPSBTPolicy aggregates with
+# FinalizePSBT, and we get a complete tx in one shot. The Ledger
+# autoclicker has to keep up with two confirmations.
+start_autopress
+SEND_OUT="$("${WCLI[@]}" -named send \
+    outputs="[{\"$DEST_ADDR\": 0.5}]" \
+    fee_rate=5)"
+stop_autopress
+COMPLETE="$(echo "$SEND_OUT" | python3 -c 'import json,sys;print(json.load(sys.stdin)["complete"])')"
+echo "send complete=$COMPLETE"
+[[ "$COMPLETE" == "True" ]] || { echo "send did not complete in one call: $SEND_OUT" >&2; exit 1; }
+SPEND_TXID="$(echo "$SEND_OUT" | python3 -c 'import json,sys;print(json.load(sys.stdin)["txid"])')"
+echo "spend txid: $SPEND_TXID"
+
+echo "== mine a confirmation block and verify the spend confirmed"
+"${MCLI[@]}" generatetoaddress 1 "$MINER_ADDR" >/dev/null
+"${WCLI[@]}" gettransaction "$SPEND_TXID" \
+    | python3 -c 'import json,sys;t=json.load(sys.stdin);assert t["confirmations"] >= 1, t;print("confirmations:", t["confirmations"])'
+
+echo "== OK: signed and broadcast a MuSig2 spend through hwi-rs"

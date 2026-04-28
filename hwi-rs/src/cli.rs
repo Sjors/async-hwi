@@ -138,5 +138,28 @@ pub enum Command {
     /// Sign a base64 PSBT and echo back the signed PSBT (also base64) as
     /// `{"psbt": "..."}`. Typically read from stdin via `--stdin` since
     /// PSBTs can be larger than the argv limit.
-    Signtx { psbt: String },
+    ///
+    /// Two modes are supported, mirroring `displayaddress`:
+    ///
+    ///   * Default (single-sig): just `signtx <psbt>`. The Ledger app
+    ///     auto-derives a default BIP44/49/84/86 wallet policy from the
+    ///     PSBT's BIP32 derivations.
+    ///   * Policy (BIP388 / MuSig2): pass `--policy-name`,
+    ///     `--policy-desc` (template with `@N/**` placeholders),
+    ///     repeated `--key`, and the 32-byte hex `--hmac` returned by
+    ///     `register`. The same call covers both MuSig2 rounds; the
+    ///     device decides which round to run based on what is already
+    ///     in the PSBT, so the caller just runs `signtx` again after
+    ///     gathering the cosigners' nonces / partial sigs.
+    Signtx {
+        psbt: String,
+        #[arg(long, requires_all = ["policy_desc", "key", "hmac"])]
+        policy_name: Option<String>,
+        #[arg(long)]
+        policy_desc: Option<String>,
+        #[arg(long, action = clap::ArgAction::Append)]
+        key: Vec<String>,
+        #[arg(long)]
+        hmac: Option<String>,
+    },
 }
