@@ -61,6 +61,10 @@ async fn main() -> ExitCode {
             Some(fp) => commands::run_displayaddress(fp, args.chain, &desc).await,
             None => Err("a fingerprint is required for this command".into()),
         },
+        Command::Register { name, desc, key } => match args.fingerprint {
+            Some(fp) => commands::run_register(fp, args.chain, &name, &desc, &key).await,
+            None => Err("a fingerprint is required for this command".into()),
+        },
         Command::Signtx { psbt } => match args.fingerprint {
             Some(fp) => commands::run_signtx(fp, args.chain, &psbt).await,
             None => Err("a fingerprint is required for this command".into()),

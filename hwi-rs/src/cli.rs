@@ -93,6 +93,24 @@ pub enum Command {
         desc: String,
     },
 
+    /// Register a BIP388 wallet policy on the device and echo the
+    /// resulting hmac as `{"hmac": "<hex>"}`. Bitcoin Core invokes this
+    /// from `registerpolicy` for any non-default policy (e.g. MuSig2,
+    /// multisig, miniscript) before signing or address display.
+    ///
+    /// `--desc` is the BIP388 descriptor template with `@N/**`
+    /// placeholders; each `--key` replaces one `@N` (in order of
+    /// appearance). The combined string must be a valid wallet policy
+    /// the device understands.
+    Register {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        desc: String,
+        #[arg(long, action = clap::ArgAction::Append)]
+        key: Vec<String>,
+    },
+
     /// Sign a base64 PSBT and echo back the signed PSBT (also base64) as
     /// `{"psbt": "..."}`. Typically read from stdin via `--stdin` since
     /// PSBTs can be larger than the argv limit.

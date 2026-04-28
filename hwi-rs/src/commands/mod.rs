@@ -12,12 +12,14 @@ mod displayaddress;
 mod enumerate;
 mod getdescriptors;
 mod getxpub;
+mod register;
 mod signtx;
 
 pub use displayaddress::run_displayaddress;
 pub use enumerate::run_enumerate;
 pub use getdescriptors::run_getdescriptors;
 pub use getxpub::run_getxpub;
+pub use register::run_register;
 pub use signtx::run_signtx;
 
 #[derive(Serialize, Deserialize)]

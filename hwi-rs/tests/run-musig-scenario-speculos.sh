@@ -238,4 +238,33 @@ case "$ADDR" in
     *) echo "unexpected address format (expected bcrt1p...): $ADDR" >&2; exit 1 ;;
 esac
 
-echo "== OK: scaffolded MuSig2 wallet (no command exercised yet)"
+echo "== registerpolicy (Core -> hwi-rs register -> speculos), autoclicking"
+start_autopress
+REG_OUT="$("${WCLI[@]}" registerpolicy "$POLICY_NAME")"
+stop_autopress
+echo "$REG_OUT"
+HMAC="$(echo "$REG_OUT" | python3 -c 'import json,sys;print(json.load(sys.stdin)["hmac"])')"
+echo "registered hmac: $HMAC"
+
+# Cross-check: the hmac just returned by registerpolicy must match
+# what Core persists in the wallet's bip388[] table.
+echo "== getwalletinfo bip388 entry"
+WI="$("${WCLI[@]}" getwalletinfo)"
+echo "$WI" | FP="$FP_A" HMAC="$HMAC" NAME="$POLICY_NAME" python3 -c '
+import json, os, sys
+w = json.load(sys.stdin)
+hmacs = w.get("bip388", [])
+assert hmacs, f"no bip388 hmacs in getwalletinfo: {w!r}"
+match = next(
+    (h for h in hmacs
+     if h["name"] == os.environ["NAME"]
+     and h["fingerprint"] == os.environ["FP"]),
+    None,
+)
+assert match is not None, f"no matching bip388 entry in {hmacs!r}"
+stored = match["hmac"]
+expected = os.environ["HMAC"]
+assert stored == expected, f"hmac mismatch: stored {stored} vs registerpolicy {expected}"
+'
+
+echo "== OK: registered MuSig2 wallet policy via hwi-rs register"

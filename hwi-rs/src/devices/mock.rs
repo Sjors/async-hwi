@@ -127,6 +127,33 @@ impl MockDevice {
         Ok(serde_json::json!({ "address": address }).to_string())
     }
 
+    /// Deterministic stub for `register`: hash the policy fields with
+    /// SHA-256 (via bitcoin::hashes) and return the digest as a 32-byte
+    /// hex hmac. Stable across runs so tests can assert on it.
+    pub fn register(
+        &self,
+        fingerprint: Fingerprint,
+        _chain: Chain,
+        name: &str,
+        desc_template: &str,
+        keys: &[String],
+    ) -> Result<String, String> {
+        use bitcoin::hashes::{sha256, Hash};
+        use bitcoin::hex::DisplayHex;
+
+        self.require_fingerprint(fingerprint)?;
+        let mut buf = String::new();
+        buf.push_str(name);
+        buf.push('|');
+        buf.push_str(desc_template);
+        for k in keys {
+            buf.push('|');
+            buf.push_str(k);
+        }
+        let hmac = sha256::Hash::hash(buf.as_bytes());
+        Ok(serde_json::json!({ "hmac": hmac.as_byte_array().to_lower_hex_string() }).to_string())
+    }
+
     pub fn signtx(
         &self,
         fingerprint: Fingerprint,

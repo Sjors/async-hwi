@@ -223,3 +223,35 @@ pub async fn do_signtx<T: Transport + Send + Sync>(
     let out = bitcoin::base64::engine::general_purpose::STANDARD.encode(bytes);
     Ok(serde_json::json!({ "psbt": out }).to_string())
 }
+
+/// Substitute `@N` placeholders in a BIP388 descriptor template with the
+/// caller-supplied keys, in order of `N`. Iterates from the highest
+/// index down so that `@0` does not match the prefix of `@10`.
+pub fn substitute_keys(template: &str, keys: &[String]) -> String {
+    let mut out = template.to_string();
+    for i in (0..keys.len()).rev() {
+        out = out.replace(&format!("@{i}"), &keys[i]);
+    }
+    out
+}
+
+/// Register a BIP388 wallet policy on the device. The caller supplies
+/// the template (with `@N/**` placeholders) and one key per `@N` slot —
+/// exactly the shape Bitcoin Core's `RegisterPolicy` produces. We
+/// re-substitute keys into the template so the underlying
+/// `register_wallet` can re-extract them with its xpub regex.
+pub async fn do_register<T: Transport + Send + Sync>(
+    device: Ledger<T>,
+    name: &str,
+    desc_template: &str,
+    keys: &[String],
+) -> Result<String, String> {
+    use bitcoin::hex::DisplayHex;
+
+    let policy = substitute_keys(desc_template, keys);
+    let hmac = async_hwi::HWI::register_wallet(&device, name, &policy)
+        .await
+        .map_err(|e| format!("register_wallet({name}, {policy}): {e:?}"))?
+        .ok_or_else(|| "device returned no hmac".to_string())?;
+    Ok(serde_json::json!({ "hmac": hmac.to_lower_hex_string() }).to_string())
+}
