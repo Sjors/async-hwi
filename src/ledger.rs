@@ -176,8 +176,9 @@ impl<T: Transport + Sync + Send> HWI for Ledger<T> {
             let yielded_objects = self.client.sign_psbt(psbt, policy, hmac.as_ref()).await?;
             for (i, obj) in yielded_objects {
                 let input = psbt.inputs.get_mut(i).ok_or(HWIError::DeviceDidNotSign)?;
-                match obj {
-                    SignPsbtYieldedObject::Partial(sig) => match sig {
+                // Ignore MuSig2 and unknown payloads.
+                if let SignPsbtYieldedObject::Partial(sig) = obj {
+                    match sig {
                         PartialSignature::Sig(key, sig) => {
                             input.partial_sigs.insert(key, sig);
                         }
@@ -187,8 +188,7 @@ impl<T: Transport + Sync + Send> HWI for Ledger<T> {
                         PartialSignature::TapScriptSig(_, None, sig) => {
                             input.tap_key_sig = Some(sig);
                         }
-                    },
-                    _ => {} // Ignore MuSig2 and unknown payloads
+                    }
                 }
             }
             Ok(())
