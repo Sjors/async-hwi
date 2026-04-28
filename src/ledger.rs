@@ -64,6 +64,30 @@ impl<T: Transport> Ledger<T> {
         self.options.wallet = Some((wallet, hmac));
         Ok(self)
     }
+
+    /// Display the address for the previously-attached wallet policy at
+    /// the given (`change`, `index`) on-device, and return the address
+    /// the device computed.
+    ///
+    /// The `HWI::display_address` trait method discards this value;
+    /// callers (e.g. hwi-rs's `displayaddress` policy mode) need it
+    /// because they cannot always re-derive the address locally — for
+    /// example, miniscript ≤ 13 cannot parse `tr(musig(...))`.
+    pub async fn display_wallet_address(
+        &self,
+        change: bool,
+        index: u32,
+    ) -> Result<bitcoin::Address<bitcoin::address::NetworkUnchecked>, HWIError> {
+        let (policy, hmac) = self
+            .options
+            .wallet
+            .as_ref()
+            .ok_or(HWIError::MissingPolicy)?;
+        Ok(self
+            .client
+            .get_wallet_address(policy, hmac.as_ref(), change, index, true)
+            .await?)
+    }
 }
 
 /// TODO: remove
