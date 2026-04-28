@@ -18,7 +18,7 @@ use bitcoin::psbt::Psbt;
 use bitcoin::secp256k1::Secp256k1;
 
 use crate::cli::Chain;
-use crate::commands::GetDescriptorsOut;
+use crate::commands::{DisplayAddressReq, GetDescriptorsOut};
 use crate::descriptor::{address_from_descriptor, format_descriptor, ADDR_TYPES};
 use crate::devices::DeviceEntry;
 
@@ -125,6 +125,41 @@ impl MockDevice {
         self.require_fingerprint(fingerprint)?;
         let address = address_from_descriptor(desc, chain)?;
         Ok(serde_json::json!({ "address": address }).to_string())
+    }
+
+    /// Stub the policy-mode displayaddress for the in-process mock: we
+    /// can't derive an address from arbitrary policy descriptors (e.g.
+    /// `tr(musig(...))`) without a full miniscript implementation, so
+    /// just echo back the request shape. Bitcoin Core's wallet doesn't
+    /// consult the address field in the policy path.
+    pub fn displayaddress_policy(
+        &self,
+        fingerprint: Fingerprint,
+        chain: Chain,
+        req: DisplayAddressReq,
+    ) -> Result<String, String> {
+        self.require_fingerprint(fingerprint)?;
+        let DisplayAddressReq::Policy {
+            name,
+            template,
+            keys,
+            hmac: _,
+            index,
+            change,
+        } = req
+        else {
+            return Err("displayaddress_policy called with non-policy request".into());
+        };
+        Ok(serde_json::json!({
+            "address": null,
+            "name": name,
+            "template": template,
+            "keys": keys,
+            "index": index,
+            "change": change,
+            "chain": format!("{chain:?}").to_lowercase(),
+        })
+        .to_string())
     }
 
     /// Deterministic stub for `register`: hash the policy fields with

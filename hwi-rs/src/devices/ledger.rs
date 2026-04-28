@@ -10,7 +10,7 @@ use bitcoin::psbt::Psbt;
 use miniscript::{Descriptor, DescriptorPublicKey};
 
 use crate::cli::Chain;
-use crate::commands::GetDescriptorsOut;
+use crate::commands::{DisplayAddressReq, GetDescriptorsOut};
 use crate::descriptor::{address_from_descriptor, format_descriptor, ADDR_TYPES};
 use crate::policy::{build_default_policy, classify_singlesig, collect_signing_groups, SingleSig};
 
@@ -254,4 +254,61 @@ pub async fn do_register<T: Transport + Send + Sync>(
         .map_err(|e| format!("register_wallet({name}, {policy}): {e:?}"))?
         .ok_or_else(|| "device returned no hmac".to_string())?;
     Ok(serde_json::json!({ "hmac": hmac.to_lower_hex_string() }).to_string())
+}
+
+/// Policy-based variant of `do_displayaddress`: re-attach a previously
+/// registered BIP388 wallet policy (template + keys + hmac) to the
+/// device session and ask it to display the address at the given
+/// (change, index). Mirrors HWI PR #794's `displayaddress --policy`
+/// flow.
+pub async fn do_displayaddress_policy<T: Transport + Send + Sync>(
+    device: Ledger<T>,
+    chain: Chain,
+    req: DisplayAddressReq,
+) -> Result<String, String> {
+    use bitcoin::hex::FromHex;
+
+    let DisplayAddressReq::Policy {
+        name,
+        template,
+        keys,
+        hmac,
+        index,
+        change,
+    } = req
+    else {
+        return Err("do_displayaddress_policy called with non-policy request".into());
+    };
+
+    let hmac_bytes = <[u8; 32]>::from_hex(&hmac).map_err(|e| format!("hmac hex decode: {e}"))?;
+    let policy = substitute_keys(&template, &keys);
+
+    let device = device
+        .with_wallet(name, &policy, Some(hmac_bytes))
+        .map_err(|e| format!("with_wallet({policy}): {e:?}"))?;
+
+    // We can't always derive the address locally for arbitrary policies
+    // — rust-miniscript through 13.x doesn't parse `tr(musig(...))` —
+    // so trust the address the device returns over its APDU. The user
+    // still confirms it on-screen, which is what the security
+    // assumption rests on.
+    //
+    // TODO: once rust-miniscript ships `tr(musig(...))` parsing
+    // (tracked at https://github.com/rust-bitcoin/rust-miniscript), we
+    // can re-derive the address locally and assert equality with the
+    // device-reported one as a paranoid cross-check.
+    let address = device
+        .display_wallet_address(change, index)
+        .await
+        .map_err(|e| format!("display_wallet_address: {e:?}"))?
+        .assume_checked();
+
+    Ok(serde_json::json!({
+        "address": address.to_string(),
+        "policy": policy,
+        "index": index,
+        "change": change,
+        "chain": format!("{chain:?}").to_lowercase(),
+    })
+    .to_string())
 }

@@ -268,3 +268,21 @@ assert stored == expected, f"hmac mismatch: stored {stored} vs registerpolicy {e
 '
 
 echo "== OK: registered MuSig2 wallet policy via hwi-rs register"
+
+echo "== walletdisplayaddress (Core -> hwi-rs displayaddress -> speculos), autoclicking"
+# walletdisplayaddress detects that the address belongs to a registered
+# BIP388 policy and dispatches through ExternalSigner::DisplayAddressPolicy
+# (which shells out to `hwi-rs displayaddress --policy-name ... --hmac ...`),
+# so we don't have to assemble the policy template + keys + hmac here.
+start_autopress
+WDA_OUT="$("${WCLI[@]}" walletdisplayaddress "$ADDR")"
+stop_autopress
+echo "$WDA_OUT"
+WDA_ADDR="$(echo "$WDA_OUT" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["address"])')"
+# walletdisplayaddress echoes the input address on success; the
+# device-vs-Core address comparison happens inside Core itself
+# (ExternalSignerScriptPubKeyMan::DisplayAddressPolicy) and a mismatch
+# would have produced an RPC error above.
+[[ "$WDA_ADDR" == "$ADDR" ]] || { echo "walletdisplayaddress echoed unexpected address: $WDA_ADDR" >&2; exit 1; }
+
+echo "== OK: drove on-device address display for the registered MuSig2 policy"

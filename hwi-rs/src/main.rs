@@ -57,8 +57,40 @@ async fn main() -> ExitCode {
             Some(fp) => commands::run_getxpub(fp, args.chain, &path).await,
             None => Err("a fingerprint is required for this command".into()),
         },
-        Command::Displayaddress { desc } => match args.fingerprint {
-            Some(fp) => commands::run_displayaddress(fp, args.chain, &desc).await,
+        Command::Displayaddress {
+            desc,
+            policy_name,
+            policy_desc,
+            key,
+            hmac,
+            index,
+            change,
+        } => match args.fingerprint {
+            Some(fp) => {
+                let req = match (desc, policy_name, policy_desc, hmac, index) {
+                    (Some(d), None, None, None, None) => {
+                        commands::DisplayAddressReq::SingleSig { desc: d }
+                    }
+                    (None, Some(name), Some(template), Some(hmac), Some(index)) => {
+                        commands::DisplayAddressReq::Policy {
+                            name,
+                            template,
+                            keys: key,
+                            hmac,
+                            index,
+                            change,
+                        }
+                    }
+                    _ => {
+                        return commands::emit_error(
+                            "displayaddress requires either --desc, or all of \
+                             --policy-name --policy-desc --key --hmac --index"
+                                .into(),
+                        )
+                    }
+                };
+                commands::run_displayaddress(fp, args.chain, req).await
+            }
             None => Err("a fingerprint is required for this command".into()),
         },
         Command::Register { name, desc, key } => match args.fingerprint {

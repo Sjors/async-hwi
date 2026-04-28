@@ -85,12 +85,36 @@ pub enum Command {
     },
 
     /// Display an address derived from the given descriptor on the device,
-    /// and echo it back as `{"address": "..."}`. The descriptor is the one
-    /// Bitcoin Core produces via `InferDescriptor` for a single scriptPubKey,
-    /// so it has no wildcards.
+    /// and echo it back as `{"address": "..."}`.
+    ///
+    /// Two modes are supported, mirroring HWI's PR #794:
+    ///
+    ///   * Single-sig (the path Bitcoin Core uses today): pass `--desc
+    ///     <definite-descriptor>`. The descriptor is the one Bitcoin Core
+    ///     produces via `InferDescriptor` for a single scriptPubKey, so it
+    ///     has no wildcards.
+    ///   * Policy (BIP388 / MuSig2): pass `--policy-name`, `--policy-desc`
+    ///     (template with `@N/**` placeholders), repeated `--key`, the
+    ///     32-byte hex `--hmac` returned by `register`, and the
+    ///     `--index` / `--change` of the address to derive. This path is
+    ///     used for descriptors that require an on-device registered
+    ///     wallet policy.
     Displayaddress {
+        #[arg(long, conflicts_with_all = ["policy_name", "policy_desc", "key", "hmac", "index", "change"])]
+        desc: Option<String>,
+
+        #[arg(long, requires_all = ["policy_desc", "key", "hmac", "index"])]
+        policy_name: Option<String>,
         #[arg(long)]
-        desc: String,
+        policy_desc: Option<String>,
+        #[arg(long, action = clap::ArgAction::Append)]
+        key: Vec<String>,
+        #[arg(long)]
+        hmac: Option<String>,
+        #[arg(long)]
+        index: Option<u32>,
+        #[arg(long, default_value_t = false)]
+        change: bool,
     },
 
     /// Register a BIP388 wallet policy on the device and echo the
