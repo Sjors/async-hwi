@@ -425,3 +425,45 @@ jobs:
         if: failure()
         run: |
           find /tmp -maxdepth 4 -name 'speculos.log' -print -exec tail -n 200 {} \; 2>/dev/null || true
+
+  # ----------------------------------------------------------------------------
+  # "Kumbaya" 3-of-3 MuSig2 scenario: combines BOTH supported HW-wallet
+  # simulators (speculos Ledger + `coldcard-mpy`) and a Bitcoin Core hot
+  # HD key into a single wallet. Exercises the multi-signer paths in
+  # Core (RegisterPolicy / FillPSBTPolicy / DisplayAddress fanning out
+  # over GetExternalSigners()) and the fingerprint-aware simulator
+  # dispatch in hwi-rs (HWI_RS_LEDGER_SIMULATOR=1 + HWI_RS_COLDCARD_SIMULATOR=1
+  # at the same time). Reuses both the ledger_app and coldcard_sim
+  # build artifacts.
+  # ----------------------------------------------------------------------------
+  kumbaya_integration:
+    name: integration (kumbaya 3-of-3 musig)
+    needs: [bitcoind_builder, ledger_app, hwi_rs_builder, coldcard_sim]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libevent-dev libcapnp-1.0.1
+
+      - uses: ./.github/actions/setup-bitcoind
+      - uses: ./.github/actions/setup-hwi-rs
+      - uses: ./.github/actions/setup-ledger-speculos
+      - id: coldcard
+        uses: ./.github/actions/setup-coldcard-sim
+
+      - name: Kumbaya 3-of-3 scenario (regtest, speculos + coldcard sim)
+        env:
+          LEDGER_APP_ELF: ${{ github.workspace }}/ledger_app/app.elf
+          SPECULOS: speculos
+          COLDCARD_SIM_DIR: ${{ steps.coldcard.outputs.sim-dir }}
+        run: bash hwi-rs/tests/run-musig-kumbaya-scenario.sh
+
+      - name: Dump simulator logs on failure
+        if: failure()
+        run: |
+          find /tmp -maxdepth 4 -name 'speculos.log' -print -exec tail -n 200 {} \; 2>/dev/null || true
+          find /tmp -maxdepth 4 -name 'coldcard-sim.log' -print -exec tail -n 200 {} \; 2>/dev/null || true
