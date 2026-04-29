@@ -403,3 +403,75 @@ jobs:
           path: coldcard-sim.tar.gz
           key: coldcard-sim-archive-v1-${{ runner.os }}-${{ steps.pin.outputs.tag }}-${{ hashFiles('hwi-rs/tests/coldcard-sim/Dockerfile', 'hwi-rs/tests/coldcard-sim/*.patch', 'hwi-rs/tests/coldcard-sim/build.sh') }}
 
+  # ----------------------------------------------------------------------------
+  # Same scenario as mock_integration / speculos_integration, but driven
+  # against the Coldcard `coldcard-mpy` simulator prepared by `coldcard_sim`.
+  # The simulator archive is restored from the shared cache rather than
+  # uploaded/downloaded as a per-run artifact.
+  # ----------------------------------------------------------------------------
+  coldcard_integration:
+    name: integration (coldcard simulator)
+    needs: [bitcoind_builder, hwi_rs_builder, coldcard_sim]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3 python3-pip pkg-config libffi-dev \
+            libsdl2-2.0-0 libsdl2-image-2.0-0 libevent-dev libcapnp-1.0.1
+          # The simulator's Python bindings: install on the host so we
+          # can run it natively without Podman in this job.
+          python3 -m pip install --upgrade pip
+          python3 -m pip install --break-system-packages \
+            pysdl2 pillow namedlist pyusb
+
+      - name: Download bitcoind artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: bitcoind
+          path: bitcoin-core/build/bin
+      - name: Make bitcoind executable
+        run: chmod +x bitcoin-core/build/bin/bitcoind bitcoin-core/build/bin/bitcoin-cli
+
+      - name: Download hwi-rs artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: hwi-rs
+          path: target/release
+      - name: Make hwi-rs executable
+        run: chmod +x target/release/hwi-rs
+
+      - name: Read firmware tag
+        id: pin
+        run: |
+          tag="$(tr -d '[:space:]' < hwi-rs/tests/coldcard-sim/firmware-tag.txt)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Restore coldcard simulator archive cache
+        uses: actions/cache/restore@v4
+        with:
+          path: coldcard-sim.tar.gz
+          key: coldcard-sim-archive-v1-${{ runner.os }}-${{ steps.pin.outputs.tag }}-${{ hashFiles('hwi-rs/tests/coldcard-sim/Dockerfile', 'hwi-rs/tests/coldcard-sim/*.patch', 'hwi-rs/tests/coldcard-sim/build.sh') }}
+
+      - name: Sanity-check cached simulator archive
+        run: test -f coldcard-sim.tar.gz
+
+      - name: Extract coldcard simulator
+        run: |
+          mkdir -p cc-sim-work
+          tar -xzf coldcard-sim.tar.gz -C cc-sim-work
+          test -x cc-sim-work/firmware/unix/coldcard-mpy
+
+      - name: Coldcard simulator scenario
+        env:
+          COLDCARD_SIM_DIR: ${{ github.workspace }}/cc-sim-work/firmware/unix
+        run: bash hwi-rs/tests/run-core-scenario-coldcard.sh
+
+      - name: Dump coldcard simulator log on failure
+        if: failure()
+        run: |
+          find /tmp -maxdepth 4 -name 'coldcard-sim.log' -print -exec tail -n 200 {} \; 2>/dev/null || true

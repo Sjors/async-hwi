@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# End-to-end test: drive the Coldcard `coldcard-mpy` simulator from
+# `hwi-rs` directly (no bitcoind yet — that comes once enough
+# subcommands are wired up to make a useful Core round trip).
+# Counterpart to run-core-scenario-speculos.sh (Ledger) and
+# run-core-scenario.sh (in-process software mock).
+#
+# The Coldcard simulator is a Linux ELF built from the Coldcard firmware
+# tree (see AGENTS.md) that talks ckcc protocol over a unix datagram
+# socket at /tmp/ckcc-simulator.sock. We can run it natively if the host
+# has a working SDL2 + headless setup, or inside a Podman container that
+# was prepared by the `coldcard_sim` CI job.
+#
+# Required env (set automatically in CI):
+#   HWI_RS_BIN      Path to hwi-rs binary. Default: ./target/release/hwi-rs
+#
+# Optional env:
+#   COLDCARD_SIM_DIR    Path to a built `firmware/unix` directory that
+#                       contains `simulator.py` and the `coldcard-mpy`
+#                       binary. If set, the simulator is launched
+#                       natively with `python3 simulator.py --headless`.
+#   COLDCARD_SIM_IMAGE  Podman image name (built by AGENTS.md / CI) that
+#                       contains the firmware tree at /work/firmware.
+#                       If set and COLDCARD_SIM_DIR is not, the
+#                       simulator is launched in a container.
+#   COLDCARD_SIM_WORK   Host path bind-mounted to /work in the
+#                       container. Default: $HOME/cc-sim
+#
+# Exactly one of COLDCARD_SIM_DIR / COLDCARD_SIM_IMAGE must be set.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+export HWI_RS_BIN="${HWI_RS_BIN:-$REPO_ROOT/target/release/hwi-rs}"
+
+if [[ ! -x "$HWI_RS_BIN" ]]; then
+    echo "missing executable: $HWI_RS_BIN" >&2
+    exit 1
+fi
+
+if [[ -z "${COLDCARD_SIM_DIR:-}" && -z "${COLDCARD_SIM_IMAGE:-}" ]]; then
+    echo "set either COLDCARD_SIM_DIR (native) or COLDCARD_SIM_IMAGE (podman)" >&2
+    exit 1
+fi
+
+DATADIR="$(mktemp -d)"
+SIM_LOG="$DATADIR/coldcard-sim.log"
+SOCK_PATH=/tmp/ckcc-simulator.sock
+CONTAINER_NAME="hwi-rs-cc-sim-$$"
+
+cleanup() {
+    if [[ -n "${SIM_PID:-}" ]]; then
+        kill "$SIM_PID" 2>/dev/null || true
+        wait "$SIM_PID" 2>/dev/null || true
+    fi
+    if [[ -n "${COLDCARD_SIM_IMAGE:-}" ]]; then
+        podman rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    fi
+    rm -f "$SOCK_PATH"
+    rm -rf "$DATADIR"
+}
+trap cleanup EXIT
+
+# Make sure no stale socket / container is in the way.
+rm -f "$SOCK_PATH"
+
+if [[ -n "${COLDCARD_SIM_DIR:-}" ]]; then
+    echo "== launching coldcard simulator natively from $COLDCARD_SIM_DIR"
+    (
+        cd "$COLDCARD_SIM_DIR"
+        # `--eff` boots with an ephemeral seed (deterministic master
+        # fingerprint 0F056943); `--headless` skips the SDL window.
+        exec python3 ./simulator.py --headless --eff
+    ) >"$SIM_LOG" 2>&1 &
+    SIM_PID=$!
+else
+    WORK="${COLDCARD_SIM_WORK:-$HOME/cc-sim}"
+    echo "== launching coldcard simulator in podman ($COLDCARD_SIM_IMAGE)"
+    podman rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    # Bind-mount /tmp so the simulator's unix socket is visible on the host.
+    podman run -d --name "$CONTAINER_NAME" \
+        -v "$WORK:/work" \
+        -v /tmp:/tmp \
+        -w /work/firmware/unix \
+        "$COLDCARD_SIM_IMAGE" \
+        bash -c 'ln -sf ../external/micropython/ports/unix/coldcard-mpy . 2>/dev/null; python3 ./simulator.py --headless --eff' \
+        >/dev/null
+    SIM_PID=""
+fi
+
+echo "== waiting for $SOCK_PATH"
+for _ in $(seq 1 60); do
+    if [[ -S "$SOCK_PATH" ]]; then
+        break
+    fi
+    sleep 1
+done
+if [[ ! -S "$SOCK_PATH" ]]; then
+    echo "coldcard simulator failed to come up; log:" >&2
+    if [[ -n "${COLDCARD_SIM_IMAGE:-}" ]]; then
+        podman logs "$CONTAINER_NAME" >&2 || true
+    else
+        cat "$SIM_LOG" >&2 || true
+    fi
+    exit 1
+fi
+
+echo "== probing simulator via hwi-rs enumerate"
+ENUM_RAW="$(HWI_RS_COLDCARD_SIMULATOR=1 "$HWI_RS_BIN" enumerate)"
+echo "$ENUM_RAW"
+FP="$(echo "$ENUM_RAW" | python3 -c '
+import json, sys
+entries = json.load(sys.stdin)
+assert len(entries) == 1, f"expected one device, got {entries!r}"
+e = entries[0]
+assert e.get("error") in (None, ""), f"coldcard error: {e!r}"
+fp = e.get("fingerprint")
+assert fp, f"no fingerprint reported: {e!r}"
+assert e.get("model", "").startswith("coldcard"), f"unexpected model: {e!r}"
+print(fp)
+')"
+echo "coldcard master fingerprint: $FP"
+
+echo "== OK"
