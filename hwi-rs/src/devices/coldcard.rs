@@ -7,7 +7,7 @@
 
 use async_hwi::coldcard::api::{
     self as ckcc,
-    protocol::{AddressFormat, DerivationPath as CkccPath},
+    protocol::{AddressFormat, DerivationPath as CkccPath, DescriptorName},
     Coldcard, SignMode,
 };
 use bitcoin::bip32::{DerivationPath, Fingerprint};
@@ -253,4 +253,77 @@ pub fn do_signtx(
 
     let out = bitcoin::base64::engine::general_purpose::STANDARD.encode(psbt.serialize());
     Ok(serde_json::json!({ "psbt": out }).to_string())
+}
+
+// --- BIP388 / MuSig2 (policy registration) -----------------------------------
+//
+// Coldcard's BIP388 model differs from Ledger's: there is no HMAC. The
+// device stores the descriptor by name (uploaded as a small JSON blob via
+// `miniscript_enroll`) and subsequent RPCs can look it up by that name.
+// We still return a (placeholder) 32-byte hex hmac from `register` so
+// Bitcoin Core's wallet accepts the response and round-trips it back to
+// us. The on-screen confirmation that registers the wallet runs as an
+// asynchronous UX flow (see `auth.maybe_enroll_xpub` in the firmware), so
+// the `mins` USB command returns immediately after queueing the file. We
+// poll `miniscript_get(name)` to know when the device has actually
+// committed the wallet; on the simulator we drive the confirmation by
+// injecting `y` keypresses through the `XKEY` test command.
+
+/// Placeholder hmac returned from Coldcard's `register`. The Coldcard
+/// BIP388 implementation has no real hmac concept (the wallet is keyed
+/// purely by name on the device), but Bitcoin Core stores whatever we
+/// return into `getwalletinfo.bip388[*].hmac` and re-passes it on
+/// later `displayaddress`/`signtx` calls. 32 zero bytes is well-formed
+/// hex and unambiguously marks "no real hmac, look up by name".
+const COLDCARD_PLACEHOLDER_HMAC: &str =
+    "0000000000000000000000000000000000000000000000000000000000000000";
+
+fn make_descriptor_name(name: &str) -> Result<DescriptorName, String> {
+    DescriptorName::new(name).map_err(|e| format!("coldcard descriptor name {name:?}: {e:?}"))
+}
+
+/// Register a BIP388 wallet policy on a Coldcard. Mirrors
+/// `do_register` for Ledger but returns a placeholder hmac because
+/// Coldcard's BIP388 model uses the wallet name as the key.
+pub fn do_register(
+    cc: &mut Coldcard,
+    name: &str,
+    desc_template: &str,
+    keys: &[String],
+) -> Result<String, String> {
+    use crate::devices::ledger::substitute_keys;
+
+    // Coldcard's miniscript parser doesn't understand the BIP389 `/**`
+    // shorthand; expand it to the explicit `/<0;1>/*` multipath form
+    // before substituting keys.
+    let policy = substitute_keys(desc_template, keys).replace("/**", "/<0;1>/*");
+    // Coldcard's `miniscript_enroll` accepts a JSON blob with `name`
+    // and `desc` fields (parsed by `auth.maybe_enroll_xpub`).
+    let payload = serde_json::json!({ "name": name, "desc": policy }).to_string();
+
+    cc.miniscript_enroll(payload.as_bytes())
+        .map_err(|e| format!("coldcard miniscript_enroll: {e:?}"))?;
+
+    // The `mins` USB command returns immediately with the UX queued on
+    // the device. Poll `miniscript_get(name)` to confirm the wallet
+    // has been committed; on the simulator, send `y` keypresses to
+    // drive the on-screen confirmation. Bitcoin Core's external-signer
+    // call has its own timeout, so we keep going until the device
+    // either commits or returns a hard error.
+    let sim = use_simulator();
+    loop {
+        if sim {
+            // numpad.inject queues the whole `args` string as a single
+            // keypress, so send one byte per call.
+            let _ = cc.sim_keypress(b"y");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        match cc.miniscript_get(make_descriptor_name(name)?) {
+            Ok(Some(_)) => break,
+            Ok(None) => continue,
+            Err(e) => return Err(format!("coldcard miniscript_get({name:?}): {e:?}")),
+        }
+    }
+
+    Ok(serde_json::json!({ "hmac": COLDCARD_PLACEHOLDER_HMAC }).to_string())
 }

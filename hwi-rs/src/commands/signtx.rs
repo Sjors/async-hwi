@@ -63,7 +63,7 @@ pub async fn run_signtx(
         return match req {
             SignTxReq::Default { psbt } => cc_signtx(&mut cc, fingerprint, chain, &psbt),
             SignTxReq::Policy { .. } => {
-                Err("policy-mode signtx is not yet supported for Coldcard".to_string())
+                return Err("signtx --policy-name is not yet supported for Coldcard".into())
             }
         };
     }
@@ -72,7 +72,7 @@ pub async fn run_signtx(
         return match req {
             SignTxReq::Default { psbt } => cc_signtx(&mut cc, fingerprint, chain, &psbt),
             SignTxReq::Policy { .. } => {
-                Err("policy-mode signtx is not yet supported for Coldcard".to_string())
+                return Err("signtx --policy-name is not yet supported for Coldcard".into())
             }
         };
     }

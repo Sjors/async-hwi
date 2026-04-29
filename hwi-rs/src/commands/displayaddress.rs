@@ -60,7 +60,7 @@ pub async fn run_displayaddress(
         return match req {
             DisplayAddressReq::SingleSig { desc } => cc_displayaddress(&mut cc, chain, &desc),
             DisplayAddressReq::Policy { .. } => {
-                Err("policy-mode displayaddress is not yet supported for Coldcard".to_string())
+                return Err("displayaddress --policy-name is not yet supported for Coldcard".into())
             }
         };
     }
@@ -69,7 +69,7 @@ pub async fn run_displayaddress(
         return match req {
             DisplayAddressReq::SingleSig { desc } => cc_displayaddress(&mut cc, chain, &desc),
             DisplayAddressReq::Policy { .. } => {
-                Err("policy-mode displayaddress is not yet supported for Coldcard".to_string())
+                return Err("displayaddress --policy-name is not yet supported for Coldcard".into())
             }
         };
     }
