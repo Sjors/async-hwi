@@ -456,6 +456,7 @@ dependencies = [
  "anstyle",
  "clap_lex",
  "strsim",
+ "terminal_size",
 ]
 
 [[package]]
@@ -479,8 +480,6 @@ checksum = "1462739cb27611015575c0c11df5df7601141071f07518d56fcc1be504cbec97"
 [[package]]
 name = "coldcard"
 version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1178252cca421753b1024d240d43e502b019f51ca8022652587cdad4347d58b7"
 dependencies = [
  "aes",
  "base58",
@@ -488,6 +487,7 @@ dependencies = [
  "ctr",
  "hidapi",
  "k256",
+ "log",
  "rand",
 ]
 
@@ -1048,6 +1048,21 @@ name = "httpdate"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
+name = "hwi-rs"
+version = "0.0.1"
+dependencies = [
+ "async-hwi",
+ "bitcoin",
+ "clap",
+ "hidapi",
+ "miniscript",
+ "serde",
+ "serde_json",
+ "shell-words",
+ "tokio",
+]
 
 [[package]]
 name = "hyper"
@@ -1969,6 +1984,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "shell-words"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
+
+[[package]]
 name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2123,6 +2144,16 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "terminal_size"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21bebf2b7c9e0a515f6e0f8c51dc0f8e4696391e6f1ff30379559f8365fb0df7"
+dependencies = [
+ "rustix",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

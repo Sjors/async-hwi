@@ -149,3 +149,329 @@ jobs:
       - name: Dump speculos log on failure
         if: failure()
         run: tail -n 200 /tmp/speculos/speculos.log || true
+
+  # ----------------------------------------------------------------------------
+  # Build the heavy artifacts shared by the hwi-rs end-to-end jobs below.
+  #   - bitcoind+bitcoin-cli (used by both integration jobs)
+  #   - hwi-rs --release      (used by both integration jobs; built once)
+  # The ledger_app artifact is reused from the job above. These builders run
+  # in parallel with linter/unit_tests/ledger_app to minimise wall-clock time.
+  # ----------------------------------------------------------------------------
+  bitcoind_builder:
+    name: bitcoind builder
+    runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: 'true'
+      BITCOIN_CORE_REF: v31.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bitcoin Core build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake pkgconf python3 \
+            libevent-dev libboost-dev ccache \
+            capnproto libcapnp-dev \
+            libsqlite3-dev
+
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-bitcoin-${{ env.BITCOIN_CORE_REF }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-bitcoin-${{ env.BITCOIN_CORE_REF }}-
+            ccache-${{ runner.os }}-bitcoin-
+
+      - name: Checkout Bitcoin Core
+        run: git clone --depth 1 --branch "$BITCOIN_CORE_REF" https://github.com/bitcoin/bitcoin.git bitcoin-core
+
+      - name: Build Bitcoin Core (wallet enabled)
+        run: |
+          cd bitcoin-core
+          cmake -B build \
+            -DENABLE_WALLET=ON \
+            -DBUILD_TESTS=OFF \
+            -DBUILD_BENCH=OFF \
+            -DBUILD_GUI=OFF \
+            -DBUILD_TX=OFF \
+            -DBUILD_UTIL=OFF \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build -j "$(nproc)" --target bitcoind bitcoin-cli
+
+      - name: Upload bitcoind artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitcoind
+          path: |
+            bitcoin-core/build/bin/bitcoind
+            bitcoin-core/build/bin/bitcoin-cli
+          if-no-files-found: error
+          retention-days: 1
+
+  hwi_rs_builder:
+    name: hwi-rs builder
+    runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: 1.85.0
+          cache: false
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+      - name: Build hwi-rs (release)
+        run: cargo build -p hwi-rs --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hwi-rs
+          path: target/release/hwi-rs
+          if-no-files-found: error
+          retention-days: 1
+
+  # ----------------------------------------------------------------------------
+  # Integration against the in-process software mock. Cheap, runs everywhere,
+  # catches almost every protocol regression.
+  # ----------------------------------------------------------------------------
+  mock_integration:
+    name: integration (mock)
+    needs: [bitcoind_builder, hwi_rs_builder]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 libevent-dev libcapnp-1.0.1
+
+      - name: Download bitcoind artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: bitcoind
+          path: bitcoin-core/build/bin
+      - name: Make bitcoind executable
+        run: chmod +x bitcoin-core/build/bin/bitcoind bitcoin-core/build/bin/bitcoin-cli
+
+      - name: Download hwi-rs artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: hwi-rs
+          path: target/release
+      - name: Make hwi-rs executable
+        run: chmod +x target/release/hwi-rs
+
+      - name: External signer scenario (regtest, mock)
+        run: bash hwi-rs/tests/run-core-scenario.sh
+
+  # ----------------------------------------------------------------------------
+  # Same scenario as mock_integration, but driven against a Speculos-emulated
+  # Ledger Nano X running the real Bitcoin app. Slower and more fragile, but
+  # independent of the mock job.
+  # ----------------------------------------------------------------------------
+  speculos_integration:
+    name: integration (speculos ledger)
+    needs: [bitcoind_builder, ledger_app, hwi_rs_builder]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SPECULOS_VERSION: '0.26.6'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3 python3-pip libevent-dev libcapnp-1.0.1 \
+            libusb-1.0-0 qemu-user-static \
+            libsdl2-image-2.0-0
+
+      - name: Install Speculos
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install "speculos==${SPECULOS_VERSION}"
+          speculos --help >/dev/null
+
+      - name: Download bitcoind artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: bitcoind
+          path: bitcoin-core/build/bin
+      - name: Make bitcoind executable
+        run: chmod +x bitcoin-core/build/bin/bitcoind bitcoin-core/build/bin/bitcoin-cli
+
+      - name: Download Ledger app artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ledger_app
+          path: ledger_app
+
+      - name: Download hwi-rs artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: hwi-rs
+          path: target/release
+      - name: Make hwi-rs executable
+        run: chmod +x target/release/hwi-rs
+
+      - name: External signer scenario (regtest, speculos)
+        env:
+          LEDGER_APP_ELF: ${{ github.workspace }}/ledger_app/app.elf
+          SPECULOS: speculos
+        run: bash hwi-rs/tests/run-core-scenario-speculos.sh
+
+      - name: Dump speculos log on failure
+        if: failure()
+        run: |
+          # Best effort — the scenario script writes speculos.log into the
+          # bitcoind datadir, which is a mktemp. Search /tmp for it.
+          find /tmp -maxdepth 4 -name 'speculos.log' -print -exec tail -n 200 {} \; 2>/dev/null || true
+
+  # ----------------------------------------------------------------------------
+  # Build the Coldcard `coldcard-mpy` simulator from upstream firmware (tag
+  # pinned in `hwi-rs/tests/coldcard-sim/firmware-tag.txt`). The resulting
+  # tarball is cached by tag + Dockerfile + patch hashes so later runs at
+  # the same pin can skip rebuilding, and downstream jobs can restore that
+  # same archive directly instead of bouncing it through an artifact upload.
+  # ----------------------------------------------------------------------------
+  coldcard_sim:
+    name: build coldcard simulator
+    needs: linter
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read firmware tag
+        id: pin
+        run: |
+          tag="$(tr -d '[:space:]' < hwi-rs/tests/coldcard-sim/firmware-tag.txt)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Check simulator archive cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          # Only check whether the final tarball exists in cache. The builder
+          # job does not need to download it on hits; the integration job will
+          # restore it for actual use.
+          path: coldcard-sim.tar.gz
+          key: coldcard-sim-archive-v1-${{ runner.os }}-${{ steps.pin.outputs.tag }}-${{ hashFiles('hwi-rs/tests/coldcard-sim/Dockerfile', 'hwi-rs/tests/coldcard-sim/*.patch', 'hwi-rs/tests/coldcard-sim/build.sh') }}
+          lookup-only: true
+
+      - name: Install podman
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+
+      - name: Build simulator
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          WORK_DIR: ${{ github.workspace }}/cc-sim-work
+          CONTAINER_RUNTIME: podman
+        run: bash hwi-rs/tests/coldcard-sim/build.sh
+
+      - name: Sanity-check built simulator
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          test -x cc-sim-work/firmware/unix/coldcard-mpy
+          test -f cc-sim-work/firmware/unix/simulator.py
+
+      - name: Tar built tree (excluding .git)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          cd cc-sim-work
+          tar --exclude='**/.git' -czf "${{ github.workspace }}/coldcard-sim.tar.gz" firmware
+
+      - name: Save simulator archive cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: coldcard-sim.tar.gz
+          key: coldcard-sim-archive-v1-${{ runner.os }}-${{ steps.pin.outputs.tag }}-${{ hashFiles('hwi-rs/tests/coldcard-sim/Dockerfile', 'hwi-rs/tests/coldcard-sim/*.patch', 'hwi-rs/tests/coldcard-sim/build.sh') }}
+
+  # ----------------------------------------------------------------------------
+  # Same scenario as mock_integration / speculos_integration, but driven
+  # against the Coldcard `coldcard-mpy` simulator prepared by `coldcard_sim`.
+  # The simulator archive is restored from the shared cache rather than
+  # uploaded/downloaded as a per-run artifact.
+  # ----------------------------------------------------------------------------
+  coldcard_integration:
+    name: integration (coldcard simulator)
+    needs: [bitcoind_builder, hwi_rs_builder, coldcard_sim]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3 python3-pip pkg-config libffi-dev \
+            libsdl2-2.0-0 libsdl2-image-2.0-0 libevent-dev libcapnp-1.0.1
+          # The simulator's Python bindings: install on the host so we
+          # can run it natively without Podman in this job.
+          python3 -m pip install --upgrade pip
+          python3 -m pip install --break-system-packages \
+            pysdl2 pillow namedlist pyusb
+
+      - name: Download bitcoind artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: bitcoind
+          path: bitcoin-core/build/bin
+      - name: Make bitcoind executable
+        run: chmod +x bitcoin-core/build/bin/bitcoind bitcoin-core/build/bin/bitcoin-cli
+
+      - name: Download hwi-rs artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: hwi-rs
+          path: target/release
+      - name: Make hwi-rs executable
+        run: chmod +x target/release/hwi-rs
+
+      - name: Read firmware tag
+        id: pin
+        run: |
+          tag="$(tr -d '[:space:]' < hwi-rs/tests/coldcard-sim/firmware-tag.txt)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Restore coldcard simulator archive cache
+        uses: actions/cache/restore@v4
+        with:
+          path: coldcard-sim.tar.gz
+          key: coldcard-sim-archive-v1-${{ runner.os }}-${{ steps.pin.outputs.tag }}-${{ hashFiles('hwi-rs/tests/coldcard-sim/Dockerfile', 'hwi-rs/tests/coldcard-sim/*.patch', 'hwi-rs/tests/coldcard-sim/build.sh') }}
+
+      - name: Sanity-check cached simulator archive
+        run: test -f coldcard-sim.tar.gz
+
+      - name: Extract coldcard simulator
+        run: |
+          mkdir -p cc-sim-work
+          tar -xzf coldcard-sim.tar.gz -C cc-sim-work
+          test -x cc-sim-work/firmware/unix/coldcard-mpy
+
+      - name: Coldcard simulator scenario
+        env:
+          COLDCARD_SIM_DIR: ${{ github.workspace }}/cc-sim-work/firmware/unix
+        run: bash hwi-rs/tests/run-core-scenario-coldcard.sh
+
+      - name: Dump coldcard simulator log on failure
+        if: failure()
+        run: |
+          find /tmp -maxdepth 4 -name 'coldcard-sim.log' -print -exec tail -n 200 {} \; 2>/dev/null || true
