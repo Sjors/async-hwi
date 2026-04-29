@@ -26,7 +26,7 @@ wired up.
 | -------- | --------------------------------- |
 | Ledger   | ✅ (new app only; legacy skipped) |
 | BitBox02 | ❌ TODO                           |
-| Coldcard | ❌ TODO                           |
+| Coldcard | ✅ (Mk4 / Q1, firmware ≥ 6.5.0X)  |
 | Jade     | ❌ TODO                           |
 | Specter  | ❌ TODO                           |
 

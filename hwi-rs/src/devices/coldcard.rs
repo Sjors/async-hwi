@@ -141,6 +141,14 @@ pub fn do_getdescriptors(
     serde_json::to_string(&out).map_err(|e| e.to_string())
 }
 
+pub fn do_getxpub(cc: &mut Coldcard, path: &str) -> Result<String, String> {
+    let derivation: DerivationPath = path.parse().map_err(|e| format!("path parse: {e}"))?;
+    let xpub = cc
+        .xpub(Some(to_ckcc_path(&derivation)?))
+        .map_err(|e| format!("coldcard xpub({derivation}): {e:?}"))?;
+    Ok(serde_json::json!({ "xpub": xpub }).to_string())
+}
+
 pub fn do_displayaddress(cc: &mut Coldcard, chain: Chain, desc: &str) -> Result<String, String> {
     let parsed: Descriptor<DescriptorPublicKey> =
         desc.parse().map_err(|e| format!("descriptor parse: {e}"))?;
