@@ -5,34 +5,76 @@ use bitcoin::bip32::Fingerprint;
 
 use crate::cli::Chain;
 use crate::devices::coldcard::{
-    do_displayaddress as cc_displayaddress, open_coldcard_by_fingerprint,
-    open_simulator as open_cc_simulator, use_simulator as use_cc_simulator,
+    do_displayaddress as cc_displayaddress, do_displayaddress_policy as cc_displayaddress_policy,
+    open_coldcard_by_fingerprint, open_simulator as open_cc_simulator,
 };
-use crate::devices::ledger::{do_displayaddress, open_ledger_by_fingerprint, use_simulator};
+use crate::devices::dispatch::{use_coldcard_simulator_for, use_ledger_simulator_for};
+use crate::devices::ledger::{
+    do_displayaddress, do_displayaddress_policy, open_ledger_by_fingerprint,
+};
 use crate::devices::mock::MockDevice;
+
+/// What kind of address-display request the CLI front-end produced.
+///
+/// `SingleSig` is the Bitcoin Core path (just `--desc <definite-descriptor>`).
+/// `Policy` mirrors HWI PR #794 — the caller supplies the registered
+/// BIP388 wallet policy, the optional hmac it was registered with, and the
+/// (change, index) of the address to derive.
+pub enum DisplayAddressReq {
+    SingleSig {
+        desc: String,
+    },
+    Policy {
+        name: String,
+        template: String,
+        keys: Vec<String>,
+        hmac: Option<String>,
+        index: u32,
+        change: bool,
+    },
+}
 
 pub async fn run_displayaddress(
     fingerprint: Fingerprint,
     chain: Chain,
-    desc: &str,
+    req: DisplayAddressReq,
 ) -> Result<String, String> {
     if let Some(mock) = MockDevice::from_env() {
-        return mock.displayaddress(fingerprint, chain, desc);
+        return match req {
+            DisplayAddressReq::SingleSig { desc } => mock.displayaddress(fingerprint, chain, &desc),
+            DisplayAddressReq::Policy { .. } => mock.displayaddress_policy(fingerprint, chain, req),
+        };
     }
-    if use_simulator() {
+    if use_ledger_simulator_for(fingerprint).await? {
         let device = LedgerSimulator::try_connect()
             .await
             .map_err(|e| format!("speculos connect: {e:?}"))?;
-        return do_displayaddress(device, fingerprint, chain, desc).await;
+        return match req {
+            DisplayAddressReq::SingleSig { desc } => {
+                do_displayaddress(device, fingerprint, chain, &desc).await
+            }
+            DisplayAddressReq::Policy { .. } => do_displayaddress_policy(device, chain, req).await,
+        };
     }
-    if use_cc_simulator() {
+    if use_coldcard_simulator_for(fingerprint)? {
         let (mut cc, _) = open_cc_simulator()?;
-        return cc_displayaddress(&mut cc, chain, desc);
+        return match req {
+            DisplayAddressReq::SingleSig { desc } => cc_displayaddress(&mut cc, chain, &desc),
+            DisplayAddressReq::Policy { .. } => cc_displayaddress_policy(&mut cc, chain, req),
+        };
     }
     let mut api = HidApi::new().map_err(|e| format!("hidapi init: {e}"))?;
     if let Ok(mut cc) = open_coldcard_by_fingerprint(&mut api, fingerprint) {
-        return cc_displayaddress(&mut cc, chain, desc);
+        return match req {
+            DisplayAddressReq::SingleSig { desc } => cc_displayaddress(&mut cc, chain, &desc),
+            DisplayAddressReq::Policy { .. } => cc_displayaddress_policy(&mut cc, chain, req),
+        };
     }
     let device = open_ledger_by_fingerprint(&api, fingerprint).await?;
-    do_displayaddress(device, fingerprint, chain, desc).await
+    match req {
+        DisplayAddressReq::SingleSig { desc } => {
+            do_displayaddress(device, fingerprint, chain, &desc).await
+        }
+        DisplayAddressReq::Policy { .. } => do_displayaddress_policy(device, chain, req).await,
+    }
 }

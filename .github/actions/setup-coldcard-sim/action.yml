@@ -1,0 +1,49 @@
+name: Set up Coldcard simulator
+description: >
+  Restore the cached `coldcard-mpy` simulator archive built by the
+  coldcard_sim job, extract it under ./cc-sim-work/, and expose the
+  resulting firmware/unix directory via the COLDCARD_SIM_DIR env var
+  for downstream scenario scripts.
+
+outputs:
+  sim-dir:
+    description: Absolute path to the firmware/unix directory containing simulator.py + coldcard-mpy.
+    value: ${{ steps.export.outputs.sim-dir }}
+
+runs:
+  using: composite
+  steps:
+    - name: Read coldcard firmware tag
+      id: pin
+      shell: bash
+      run: |
+        tag="$(tr -d '[:space:]' < hwi-rs/tests/coldcard-sim/firmware-tag.txt)"
+        echo "tag=$tag" >> "$GITHUB_OUTPUT"
+    - name: Restore coldcard simulator archive cache
+      uses: actions/cache/restore@v4
+      with:
+        path: coldcard-sim.tar.gz
+        key: coldcard-sim-archive-v1-${{ runner.os }}-${{ steps.pin.outputs.tag }}-${{ hashFiles('hwi-rs/tests/coldcard-sim/Dockerfile', 'hwi-rs/tests/coldcard-sim/*.patch', 'hwi-rs/tests/coldcard-sim/build.sh') }}
+    - name: Sanity-check cached simulator archive
+      shell: bash
+      run: test -f coldcard-sim.tar.gz
+    - name: Install coldcard simulator runtime dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          python3 python3-pip pkg-config libffi-dev \
+          libsdl2-2.0-0 libsdl2-image-2.0-0
+        python3 -m pip install --upgrade pip
+        python3 -m pip install --break-system-packages \
+          pysdl2 pillow namedlist pyusb
+    - name: Extract coldcard simulator
+      shell: bash
+      run: |
+        mkdir -p cc-sim-work
+        tar -xzf coldcard-sim.tar.gz -C cc-sim-work
+        test -x cc-sim-work/firmware/unix/coldcard-mpy
+    - name: Export simulator dir
+      id: export
+      shell: bash
+      run: echo "sim-dir=${GITHUB_WORKSPACE}/cc-sim-work/firmware/unix" >> "$GITHUB_OUTPUT"

@@ -85,16 +85,83 @@ pub enum Command {
     },
 
     /// Display an address derived from the given descriptor on the device,
-    /// and echo it back as `{"address": "..."}`. The descriptor is the one
-    /// Bitcoin Core produces via `InferDescriptor` for a single scriptPubKey,
-    /// so it has no wildcards.
+    /// and echo it back as `{"address": "..."}`.
+    ///
+    /// Two modes are supported, mirroring HWI's PR #794:
+    ///
+    ///   * Single-sig (the path Bitcoin Core uses today): pass `--desc
+    ///     <definite-descriptor>`. The descriptor is the one Bitcoin Core
+    ///     produces via `InferDescriptor` for a single scriptPubKey, so it
+    ///     has no wildcards.
+    ///   * Policy (BIP388 / MuSig2): pass `--policy-name`, `--policy-desc`
+    ///     (template with `@N/**` placeholders), repeated `--key`, the
+    ///     optional 32-byte hex `--hmac` returned by `register`, and the
+    ///     `--index` / `--change` of the address to derive. This path is
+    ///     used for descriptors that require an on-device registered
+    ///     wallet policy.
     Displayaddress {
+        #[arg(long, conflicts_with_all = ["policy_name", "policy_desc", "key", "hmac", "index", "change"])]
+        desc: Option<String>,
+
+        #[arg(long, requires_all = ["policy_desc", "key", "index"])]
+        policy_name: Option<String>,
+        #[arg(long)]
+        policy_desc: Option<String>,
+        #[arg(long, action = clap::ArgAction::Append)]
+        key: Vec<String>,
+        #[arg(long)]
+        hmac: Option<String>,
+        #[arg(long)]
+        index: Option<u32>,
+        #[arg(long, default_value_t = false)]
+        change: bool,
+    },
+
+    /// Register a BIP388 wallet policy on the device. Devices that
+    /// return a registration hmac echo it as `{"hmac": "<hex>"}`;
+    /// devices that key policies by name alone can omit the field.
+    /// Bitcoin Core invokes this from `registerpolicy` for any
+    /// non-default policy (e.g. MuSig2, multisig, miniscript) before
+    /// signing or address display.
+    ///
+    /// `--desc` is the BIP388 descriptor template with `@N/**`
+    /// placeholders; each `--key` replaces one `@N` (in order of
+    /// appearance). The combined string must be a valid wallet policy
+    /// the device understands.
+    Register {
+        #[arg(long)]
+        name: String,
         #[arg(long)]
         desc: String,
+        #[arg(long, action = clap::ArgAction::Append)]
+        key: Vec<String>,
     },
 
     /// Sign a base64 PSBT and echo back the signed PSBT (also base64) as
     /// `{"psbt": "..."}`. Typically read from stdin via `--stdin` since
     /// PSBTs can be larger than the argv limit.
-    Signtx { psbt: String },
+    ///
+    /// Two modes are supported, mirroring `displayaddress`:
+    ///
+    ///   * Default (single-sig): just `signtx <psbt>`. The Ledger app
+    ///     auto-derives a default BIP44/49/84/86 wallet policy from the
+    ///     PSBT's BIP32 derivations.
+    ///   * Policy (BIP388 / MuSig2): pass `--policy-name`,
+    ///     `--policy-desc` (template with `@N/**` placeholders),
+    ///     repeated `--key`, and optionally the 32-byte hex `--hmac`
+    ///     returned by `register`. The same call covers both MuSig2 rounds; the
+    ///     device decides which round to run based on what is already
+    ///     in the PSBT, so the caller just runs `signtx` again after
+    ///     gathering the cosigners' nonces / partial sigs.
+    Signtx {
+        psbt: String,
+        #[arg(long, requires_all = ["policy_desc", "key"])]
+        policy_name: Option<String>,
+        #[arg(long)]
+        policy_desc: Option<String>,
+        #[arg(long, action = clap::ArgAction::Append)]
+        key: Vec<String>,
+        #[arg(long)]
+        hmac: Option<String>,
+    },
 }

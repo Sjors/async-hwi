@@ -7,7 +7,7 @@
 
 use async_hwi::coldcard::api::{
     self as ckcc,
-    protocol::{AddressFormat, DerivationPath as CkccPath},
+    protocol::{AddressFormat, DerivationPath as CkccPath, DescriptorName},
     Coldcard, SignMode,
 };
 use bitcoin::bip32::{DerivationPath, Fingerprint};
@@ -16,7 +16,7 @@ use hidapi::HidApi;
 use miniscript::{Descriptor, DescriptorPublicKey};
 
 use crate::cli::Chain;
-use crate::commands::GetDescriptorsOut;
+use crate::commands::{DisplayAddressReq, GetDescriptorsOut, SignTxReq};
 use crate::descriptor::{address_from_descriptor, format_descriptor, ADDR_TYPES};
 use crate::policy::{classify_singlesig, collect_signing_groups, SingleSig};
 
@@ -248,6 +248,190 @@ pub fn do_signtx(
             .append(&mut signed.inputs[i].tap_script_sigs);
         if let Some(sig) = signed.inputs[i].tap_key_sig {
             psbt.inputs[i].tap_key_sig = Some(sig);
+        }
+    }
+
+    let out = bitcoin::base64::engine::general_purpose::STANDARD.encode(psbt.serialize());
+    Ok(serde_json::json!({ "psbt": out }).to_string())
+}
+
+// --- BIP388 / MuSig2 (policy-mode) ------------------------------------------
+//
+// Coldcard's BIP388 model differs from Ledger's: there is no HMAC. The
+// device stores the descriptor by name (uploaded as a small JSON blob via
+// `miniscript_enroll`), and identifies it on subsequent address-display
+// and sign-PSBT calls by that name. Bitcoin Core may round-trip an
+// optional hmac for other devices, but Coldcard ignores it and looks the
+// policy up by name. The on-screen
+// confirmation that registers the wallet runs as an asynchronous UX
+// flow (see `auth.maybe_enroll_xpub` in the firmware), so the `mins`
+// USB command returns immediately after queueing the file. We poll
+// `miniscript_get(name)` to know when the device has actually committed
+// the wallet; on the simulator we drive the confirmation by injecting
+// `y` keypresses through the `XKEY` test command.
+
+fn make_descriptor_name(name: &str) -> Result<DescriptorName, String> {
+    DescriptorName::new(name).map_err(|e| format!("coldcard descriptor name {name:?}: {e:?}"))
+}
+
+/// On the simulator, send a few `y` keypresses to dismiss whatever UX
+/// modal was just opened by the previous USB command. The firmware's
+/// `numpad.inject` queues the entire `args` payload as a single
+/// keypress, so we issue several one-byte sends to walk through a
+/// confirmation prompt. The full enroll/sign flows additionally pump
+/// keypresses inside the completion-poll loop.
+fn sim_dismiss(cc: &mut Coldcard) {
+    if !use_simulator() {
+        return;
+    }
+    for _ in 0..5 {
+        let _ = cc.sim_keypress(b"y");
+    }
+}
+
+/// Register a BIP388 wallet policy on a Coldcard. Mirrors
+/// `do_register` for Ledger but returns no hmac because Coldcard's
+/// BIP388 model uses the wallet name as the key.
+pub fn do_register(
+    cc: &mut Coldcard,
+    name: &str,
+    desc_template: &str,
+    keys: &[String],
+) -> Result<String, String> {
+    use crate::devices::ledger::substitute_keys;
+
+    // Coldcard's miniscript parser doesn't understand the BIP389 `/**`
+    // shorthand; expand it to the explicit `/<0;1>/*` multipath form
+    // before substituting keys.
+    let policy = substitute_keys(desc_template, keys).replace("/**", "/<0;1>/*");
+    // Coldcard's `miniscript_enroll` accepts a JSON blob with `name`
+    // and `desc` fields (parsed by `auth.maybe_enroll_xpub`).
+    let payload = serde_json::json!({ "name": name, "desc": policy }).to_string();
+
+    cc.miniscript_enroll(payload.as_bytes())
+        .map_err(|e| format!("coldcard miniscript_enroll: {e:?}"))?;
+
+    // The `mins` USB command returns immediately with the UX queued on
+    // the device. Poll `miniscript_get(name)` to confirm the wallet
+    // has been committed; on the simulator, send `y` keypresses to
+    // drive the on-screen confirmation. Bitcoin Core's external-signer
+    // call has its own timeout, so we keep going until the device
+    // either commits or returns a hard error.
+    let sim = use_simulator();
+    loop {
+        if sim {
+            // numpad.inject queues the whole `args` string as a single
+            // keypress, so send one byte per call.
+            let _ = cc.sim_keypress(b"y");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        match cc.miniscript_get(make_descriptor_name(name)?) {
+            Ok(Some(_)) => break,
+            Ok(None) => continue,
+            Err(e) => return Err(format!("coldcard miniscript_get({name:?}): {e:?}")),
+        }
+    }
+
+    Ok(serde_json::json!({}).to_string())
+}
+
+/// Display an address for a previously registered BIP388 wallet
+/// policy. Coldcard looks the wallet up by name; any supplied hmac is
+/// ignored.
+pub fn do_displayaddress_policy(
+    cc: &mut Coldcard,
+    chain: Chain,
+    req: DisplayAddressReq,
+) -> Result<String, String> {
+    let DisplayAddressReq::Policy {
+        name,
+        index,
+        change,
+        ..
+    } = req
+    else {
+        return Err("do_displayaddress_policy called with non-policy request".into());
+    };
+
+    let descriptor_name = make_descriptor_name(&name)?;
+    let address = cc
+        .miniscript_address(descriptor_name, change, index)
+        .map_err(|e| format!("coldcard miniscript_address({name:?}): {e:?}"))?;
+    sim_dismiss(cc);
+
+    Ok(serde_json::json!({
+        "address": address,
+        "index": index,
+        "change": change,
+        "chain": format!("{chain:?}").to_lowercase(),
+    })
+    .to_string())
+}
+
+/// Sign a PSBT against a previously registered BIP388 wallet policy.
+/// Drives one MuSig2 round per call (the device picks the round from
+/// the PSBT contents — round 1 produces pub nonces, round 2 produces
+/// partial sigs); the caller invokes `signtx` again after gathering
+/// the cosigners' contributions.
+pub fn do_signtx_policy(cc: &mut Coldcard, req: SignTxReq) -> Result<String, String> {
+    use bitcoin::base64::Engine as _;
+
+    let SignTxReq::Policy {
+        psbt: psbt_b64,
+        name,
+        ..
+    } = req
+    else {
+        return Err("do_signtx_policy called with non-policy request".into());
+    };
+
+    let raw = bitcoin::base64::engine::general_purpose::STANDARD
+        .decode(psbt_b64.trim())
+        .map_err(|e| format!("psbt base64 decode: {e}"))?;
+    let mut psbt = Psbt::deserialize(&raw).map_err(|e| format!("psbt parse: {e}"))?;
+
+    let descriptor_name = make_descriptor_name(&name)?;
+    cc.sign_psbt_miniscript(&psbt.serialize(), SignMode::Signed, Some(descriptor_name))
+        .map_err(|e| format!("coldcard sign_psbt_miniscript({name:?}): {e:?}"))?;
+
+    let sim = use_simulator();
+    let signed = loop {
+        if sim {
+            let _ = cc.sim_keypress(b"y");
+        }
+        match cc
+            .get_signed_tx()
+            .map_err(|e| format!("coldcard get_signed_tx: {e:?}"))?
+        {
+            Some(tx) => break tx,
+            None => std::thread::sleep(std::time::Duration::from_millis(200)),
+        }
+    };
+
+    let mut signed = Psbt::deserialize(&signed).map_err(|e| format!("signed psbt parse: {e}"))?;
+
+    // Merge anything new the device produced back into the caller's
+    // PSBT. For MuSig2 round 1 the new entries live in the per-input
+    // `unknown` map (BIP-373 `PSBT_IN_MUSIG2_PUB_NONCE`); for round 2
+    // it's `PSBT_IN_MUSIG2_PARTIAL_SIG` plus, after aggregation, the
+    // taproot key signature in `tap_key_sig`. Keep the original PSBT
+    // as the basis so we don't lose any fields the device may have
+    // dropped from its echoed copy.
+    for i in 0..signed.inputs.len() {
+        psbt.inputs[i]
+            .partial_sigs
+            .append(&mut signed.inputs[i].partial_sigs);
+        psbt.inputs[i]
+            .tap_script_sigs
+            .append(&mut signed.inputs[i].tap_script_sigs);
+        if let Some(sig) = signed.inputs[i].tap_key_sig {
+            psbt.inputs[i].tap_key_sig = Some(sig);
+        }
+        // BIP-373 MuSig2 fields and any other unknown the device
+        // emitted. Device-supplied values win on key collisions.
+        let new_unknown = std::mem::take(&mut signed.inputs[i].unknown);
+        for (k, v) in new_unknown {
+            psbt.inputs[i].unknown.insert(k, v);
         }
     }
 

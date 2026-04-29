@@ -1,0 +1,18 @@
+name: Set up bitcoind
+description: >
+  Download the bitcoind+bitcoin-cli artifact published by the
+  bitcoind_builder job and mark them executable. Centralised so the
+  half-dozen integration jobs that all need bitcoind don't each repeat
+  the download + chmod boilerplate.
+
+runs:
+  using: composite
+  steps:
+    - name: Download bitcoind artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: bitcoind
+        path: bitcoin-core/build/bin
+    - name: Make bitcoind executable
+      shell: bash
+      run: chmod +x bitcoin-core/build/bin/bitcoind bitcoin-core/build/bin/bitcoin-cli

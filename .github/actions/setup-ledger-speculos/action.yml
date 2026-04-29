@@ -1,0 +1,34 @@
+name: Set up Ledger Speculos
+description: >
+  Install Speculos at the pinned version and download the Ledger
+  Bitcoin app .elf published by the ledger_app job. Sets the SPECULOS
+  env var (so callers can rely on `speculos` being on PATH) and stages
+  the app under ./ledger_app/.
+
+inputs:
+  speculos-version:
+    description: Speculos version to install (must match the SDK the ledger_app artifact was built against).
+    required: false
+    default: '0.26.6'
+
+runs:
+  using: composite
+  steps:
+    - name: Install Speculos system dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          python3 python3-pip libusb-1.0-0 qemu-user-static \
+          libsdl2-image-2.0-0
+    - name: Install Speculos (pip)
+      shell: bash
+      run: |
+        python3 -m pip install --upgrade pip
+        python3 -m pip install "speculos==${{ inputs.speculos-version }}"
+        speculos --help >/dev/null
+    - name: Download Ledger app artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: ledger_app
+        path: ledger_app
