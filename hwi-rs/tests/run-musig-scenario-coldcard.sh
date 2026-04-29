@@ -7,15 +7,17 @@
 #     through coldcard-signer.sh.
 #   * Build the `musig_hww` wallet (cosigner A on the Coldcard, cosigner
 #     B as a hot key) and import the tr(musig(A,B)/<0;1>/*) descriptor.
-#   * Register the policy on the device, drive walletdisplayaddress,
-#     and verify Bitcoin Core stores the returned placeholder hmac.
+#   * Register the policy on the device, drive walletdisplayaddress.
+#   * Fund the address from a helper miner wallet, then spend it back
+#     through MuSig2 in a single `send` call (which runs both rounds
+#     in-process and asserts complete=true), and verify the spend
+#     confirms.
 #
 # Coldcard differences vs the Ledger speculos scenario:
-#   * BIP388 wallets on Coldcard are keyed by name, not by HMAC, so the
-#     hmac round-tripped through Bitcoin Core's `getwalletinfo.bip388`
-#     is a 32-byte zero placeholder produced by hwi-rs (see
-#     COLDCARD_PLACEHOLDER_HMAC in src/devices/coldcard.rs). The device
-#     ignores it on displayaddress and looks up the wallet by name.
+#   * BIP388 wallets on Coldcard are keyed by name, not by HMAC, so
+#     `register` returns no hmac field at all. Bitcoin Core stores just
+#     the policy metadata it needs (name + fingerprint), and the device
+#     looks policies up by name for signtx/displayaddress.
 #   * On-device confirmations are driven by `XKEY` keypress injection
 #     embedded in hwi-rs (see coldcard-vendored sim_keypress), so
 #     unlike the Ledger scenario there is no external autopressing
@@ -217,12 +219,12 @@ esac
 echo "== registerpolicy on $WALLET_NAME as '$POLICY_NAME' (Core -> hwi-rs register -> coldcard simulator)"
 REG_OUT="$(wallet_cli registerpolicy "$POLICY_NAME")"
 echo "$REG_OUT"
-HMAC="$(echo "$REG_OUT" | python3 -c 'import json,sys;print(json.load(sys.stdin)["hmac"])')"
-echo "registered hmac: $HMAC"
+echo "== registerpolicy should not return an hmac for Coldcard"
+echo "$REG_OUT" | python3 -c 'import json,sys; out=json.load(sys.stdin); assert "hmac" not in out, out'
 
 echo "== getwalletinfo bip388 entry on $WALLET_NAME"
 wallet_cli getwalletinfo \
-    | FP="$FP_A" HMAC="$HMAC" NAME="$POLICY_NAME" python3 -c '
+    | FP="$FP_A" NAME="$POLICY_NAME" python3 -c '
 import json, os, sys
 w = json.load(sys.stdin)
 hmacs = w.get("bip388", [])
@@ -234,9 +236,7 @@ match = next(
     None,
 )
 assert match is not None, f"no matching bip388 entry in {hmacs!r}"
-stored = match["hmac"]
-expected = os.environ["HMAC"]
-assert stored == expected, f"hmac mismatch: stored {stored} vs registerpolicy {expected}"
+assert "hmac" not in match, f"unexpected hmac stored for Coldcard policy: {match!r}"
 '
 
 echo "== walletdisplayaddress (Core -> hwi-rs displayaddress --policy-name -> coldcard simulator)"
@@ -246,3 +246,47 @@ WDA_ADDR="$(echo "$WDA_OUT" | python3 -c 'import json,sys; print(json.loads(sys.
 [[ "$WDA_ADDR" == "$ADDR" ]] || { echo "walletdisplayaddress echoed unexpected address: $WDA_ADDR" >&2; exit 1; }
 
 echo "== OK: drove on-device address display for the registered MuSig2 policy"
+
+# ---------------------------------------------------------------------
+# Funding + MuSig2 spend round-trip.
+# ---------------------------------------------------------------------
+
+echo "== creating helper miner wallet (no external signer)"
+"${CLI[@]}" -named createwallet \
+    wallet_name=miner \
+    descriptors=true \
+    blank=false >/dev/null
+MINER_ADDR="$(miner_cli getnewaddress "" bech32m)"
+echo "== mining 101 blocks to miner so it has spendable coinbase"
+miner_cli generatetoaddress 101 "$MINER_ADDR" >/dev/null
+
+echo "== funding $WALLET_NAME receive address $ADDR with 1.0 BTC"
+FUND_TXID="$(miner_cli -named sendtoaddress address="$ADDR" amount=1.0)"
+echo "fund txid: $FUND_TXID"
+miner_cli generatetoaddress 1 "$MINER_ADDR" >/dev/null
+
+BAL="$(wallet_cli getbalance)"
+echo "$WALLET_NAME balance: $BAL"
+python3 - <<PY
+b = float("$BAL")
+assert b >= 0.999, f"unexpected $WALLET_NAME balance: {b}"
+PY
+
+DEST_ADDR="$(miner_cli getnewaddress "" bech32m)"
+
+echo "== send (single call: expect both MuSig2 rounds to run, complete=true)"
+SEND_OUT="$(wallet_cli -named send \
+    outputs="[{\"$DEST_ADDR\": 0.5}]" \
+    fee_rate=5)"
+COMPLETE="$(echo "$SEND_OUT" | python3 -c 'import json,sys;print(json.load(sys.stdin)["complete"])')"
+echo "send complete=$COMPLETE"
+[[ "$COMPLETE" == "True" ]] || { echo "send did not complete in one call: $SEND_OUT" >&2; exit 1; }
+SPEND_TXID="$(echo "$SEND_OUT" | python3 -c 'import json,sys;print(json.load(sys.stdin)["txid"])')"
+echo "spend txid: $SPEND_TXID"
+
+echo "== mine a confirmation block and verify the spend confirmed"
+miner_cli generatetoaddress 1 "$MINER_ADDR" >/dev/null
+wallet_cli gettransaction "$SPEND_TXID" \
+    | python3 -c 'import json,sys;t=json.load(sys.stdin);assert t["confirmations"] >= 1, t;print("confirmations:", t["confirmations"])'
+
+echo "== OK: signed and broadcast a MuSig2 spend through hwi-rs and a Coldcard simulator"

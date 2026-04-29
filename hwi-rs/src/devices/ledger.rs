@@ -269,6 +269,8 @@ pub async fn do_signtx_policy<T: Transport + Send + Sync>(
         return Err("do_signtx_policy called with non-policy request".into());
     };
 
+    let hmac = hmac.ok_or_else(|| "Ledger policy mode requires --hmac".to_string())?;
+
     let raw = bitcoin::base64::engine::general_purpose::STANDARD
         .decode(psbt_b64.trim())
         .map_err(|e| format!("psbt base64 decode: {e}"))?;
@@ -390,6 +392,7 @@ pub async fn do_displayaddress_policy<T: Transport + Send + Sync>(
         return Err("do_displayaddress_policy called with non-policy request".into());
     };
 
+    let hmac = hmac.ok_or_else(|| "Ledger policy mode requires --hmac".to_string())?;
     let hmac_bytes = <[u8; 32]>::from_hex(&hmac).map_err(|e| format!("hmac hex decode: {e}"))?;
     let policy = substitute_keys(&template, &keys);
 

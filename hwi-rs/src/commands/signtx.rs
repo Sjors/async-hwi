@@ -5,8 +5,8 @@ use bitcoin::bip32::Fingerprint;
 
 use crate::cli::Chain;
 use crate::devices::coldcard::{
-    do_signtx as cc_signtx, open_coldcard_by_fingerprint, open_simulator as open_cc_simulator,
-    use_simulator as use_cc_simulator,
+    do_signtx as cc_signtx, do_signtx_policy as cc_signtx_policy, open_coldcard_by_fingerprint,
+    open_simulator as open_cc_simulator, use_simulator as use_cc_simulator,
 };
 use crate::devices::ledger::{
     do_signtx, do_signtx_policy, open_ledger_by_fingerprint, use_simulator,
@@ -18,7 +18,7 @@ use crate::devices::mock::MockDevice;
 /// `Default` is the existing single-sig path: build a default Ledger
 /// wallet policy on the fly from the PSBT's BIP32 derivations.
 /// `Policy` mirrors HWI PR #794 — the caller supplies the previously
-/// registered BIP388 wallet policy (template + keys + hmac), and the
+/// registered BIP388 wallet policy (template + keys + optional hmac), and the
 /// device drives one round of MuSig2 signing (round 1 yields pub
 /// nonces, round 2 yields partial signatures). The Ledger app picks
 /// the round based on what is already in the PSBT.
@@ -31,7 +31,7 @@ pub enum SignTxReq {
         name: String,
         template: String,
         keys: Vec<String>,
-        hmac: String,
+        hmac: Option<String>,
     },
 }
 
@@ -62,18 +62,14 @@ pub async fn run_signtx(
         let (mut cc, _) = open_cc_simulator()?;
         return match req {
             SignTxReq::Default { psbt } => cc_signtx(&mut cc, fingerprint, chain, &psbt),
-            SignTxReq::Policy { .. } => {
-                return Err("signtx --policy-name is not yet supported for Coldcard".into())
-            }
+            SignTxReq::Policy { .. } => cc_signtx_policy(&mut cc, req),
         };
     }
     let mut api = HidApi::new().map_err(|e| format!("hidapi init: {e}"))?;
     if let Ok(mut cc) = open_coldcard_by_fingerprint(&mut api, fingerprint) {
         return match req {
             SignTxReq::Default { psbt } => cc_signtx(&mut cc, fingerprint, chain, &psbt),
-            SignTxReq::Policy { .. } => {
-                return Err("signtx --policy-name is not yet supported for Coldcard".into())
-            }
+            SignTxReq::Policy { .. } => cc_signtx_policy(&mut cc, req),
         };
     }
     let device = open_ledger_by_fingerprint(&api, fingerprint).await?;

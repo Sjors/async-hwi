@@ -6,7 +6,7 @@
 //!   <cmd> --fingerprint FP --chain CHAIN register \
 //!         --name NAME --desc TEMPLATE --key KEY1 [--key KEY2 ...]
 //!
-//! and parses `{"hmac": "<hex>"}` out of stdout.
+//! and optionally parses `{"hmac": "<hex>"}` out of stdout.
 
 use async_hwi::ledger::{HidApi, LedgerSimulator};
 use bitcoin::bip32::Fingerprint;

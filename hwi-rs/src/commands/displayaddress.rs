@@ -18,7 +18,7 @@ use crate::devices::mock::MockDevice;
 ///
 /// `SingleSig` is the Bitcoin Core path (just `--desc <definite-descriptor>`).
 /// `Policy` mirrors HWI PR #794 — the caller supplies the registered
-/// BIP388 wallet policy, the hmac it was registered with, and the
+/// BIP388 wallet policy, the optional hmac it was registered with, and the
 /// (change, index) of the address to derive.
 pub enum DisplayAddressReq {
     SingleSig {
@@ -28,7 +28,7 @@ pub enum DisplayAddressReq {
         name: String,
         template: String,
         keys: Vec<String>,
-        hmac: String,
+        hmac: Option<String>,
         index: u32,
         change: bool,
     },

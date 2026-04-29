@@ -380,6 +380,11 @@ jobs:
           COLDCARD_SIM_DIR: ${{ steps.coldcard.outputs.sim-dir }}
         run: bash hwi-rs/tests/run-core-scenario-coldcard.sh
 
+      - name: Coldcard simulator MuSig2 scenario
+        env:
+          COLDCARD_SIM_DIR: ${{ steps.coldcard.outputs.sim-dir }}
+        run: bash hwi-rs/tests/run-musig-scenario-coldcard.sh
+
       - name: Dump coldcard simulator log on failure
         if: failure()
         run: |

@@ -95,7 +95,7 @@ pub enum Command {
     ///     has no wildcards.
     ///   * Policy (BIP388 / MuSig2): pass `--policy-name`, `--policy-desc`
     ///     (template with `@N/**` placeholders), repeated `--key`, the
-    ///     32-byte hex `--hmac` returned by `register`, and the
+    ///     optional 32-byte hex `--hmac` returned by `register`, and the
     ///     `--index` / `--change` of the address to derive. This path is
     ///     used for descriptors that require an on-device registered
     ///     wallet policy.
@@ -103,7 +103,7 @@ pub enum Command {
         #[arg(long, conflicts_with_all = ["policy_name", "policy_desc", "key", "hmac", "index", "change"])]
         desc: Option<String>,
 
-        #[arg(long, requires_all = ["policy_desc", "key", "hmac", "index"])]
+        #[arg(long, requires_all = ["policy_desc", "key", "index"])]
         policy_name: Option<String>,
         #[arg(long)]
         policy_desc: Option<String>,
@@ -117,10 +117,12 @@ pub enum Command {
         change: bool,
     },
 
-    /// Register a BIP388 wallet policy on the device and echo the
-    /// resulting hmac as `{"hmac": "<hex>"}`. Bitcoin Core invokes this
-    /// from `registerpolicy` for any non-default policy (e.g. MuSig2,
-    /// multisig, miniscript) before signing or address display.
+    /// Register a BIP388 wallet policy on the device. Devices that
+    /// return a registration hmac echo it as `{"hmac": "<hex>"}`;
+    /// devices that key policies by name alone can omit the field.
+    /// Bitcoin Core invokes this from `registerpolicy` for any
+    /// non-default policy (e.g. MuSig2, multisig, miniscript) before
+    /// signing or address display.
     ///
     /// `--desc` is the BIP388 descriptor template with `@N/**`
     /// placeholders; each `--key` replaces one `@N` (in order of
@@ -146,14 +148,14 @@ pub enum Command {
     ///     PSBT's BIP32 derivations.
     ///   * Policy (BIP388 / MuSig2): pass `--policy-name`,
     ///     `--policy-desc` (template with `@N/**` placeholders),
-    ///     repeated `--key`, and the 32-byte hex `--hmac` returned by
-    ///     `register`. The same call covers both MuSig2 rounds; the
+    ///     repeated `--key`, and optionally the 32-byte hex `--hmac`
+    ///     returned by `register`. The same call covers both MuSig2 rounds; the
     ///     device decides which round to run based on what is already
     ///     in the PSBT, so the caller just runs `signtx` again after
     ///     gathering the cosigners' nonces / partial sigs.
     Signtx {
         psbt: String,
-        #[arg(long, requires_all = ["policy_desc", "key", "hmac"])]
+        #[arg(long, requires_all = ["policy_desc", "key"])]
         policy_name: Option<String>,
         #[arg(long)]
         policy_desc: Option<String>,

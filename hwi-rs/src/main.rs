@@ -71,7 +71,7 @@ async fn main() -> ExitCode {
                     (Some(d), None, None, None, None) => {
                         commands::DisplayAddressReq::SingleSig { desc: d }
                     }
-                    (None, Some(name), Some(template), Some(hmac), Some(index)) => {
+                    (None, Some(name), Some(template), hmac, Some(index)) => {
                         commands::DisplayAddressReq::Policy {
                             name,
                             template,
@@ -84,7 +84,8 @@ async fn main() -> ExitCode {
                     _ => {
                         return commands::emit_error(
                             "displayaddress requires either --desc, or all of \
-                             --policy-name --policy-desc --key --hmac --index"
+                             --policy-name --policy-desc --key --index \
+                             (with optional --hmac)"
                                 .into(),
                         )
                     }
@@ -107,7 +108,7 @@ async fn main() -> ExitCode {
             Some(fp) => {
                 let req = match (policy_name, policy_desc, hmac) {
                     (None, None, None) => commands::SignTxReq::Default { psbt },
-                    (Some(name), Some(template), Some(hmac)) => commands::SignTxReq::Policy {
+                    (Some(name), Some(template), hmac) => commands::SignTxReq::Policy {
                         psbt,
                         name,
                         template,
@@ -117,7 +118,8 @@ async fn main() -> ExitCode {
                     _ => {
                         return commands::emit_error(
                             "signtx requires either no policy flags, or all of \
-                             --policy-name --policy-desc --key --hmac"
+                             --policy-name --policy-desc --key \
+                             (with optional --hmac)"
                                 .into(),
                         )
                     }
