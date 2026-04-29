@@ -11,6 +11,7 @@
 use serde::Serialize;
 
 pub mod coldcard;
+pub mod dispatch;
 pub mod ledger;
 pub mod mock;
 

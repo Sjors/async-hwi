@@ -18,10 +18,13 @@ pub async fn run_enumerate() -> Result<String, String> {
     if let Some(mock) = MockDevice::from_env() {
         return mock.enumerate();
     }
+
+    // Simulator paths: when either (or both) of HWI_RS_LEDGER_SIMULATOR
+    // and HWI_RS_COLDCARD_SIMULATOR is set, return the corresponding
+    // simulated devices and skip HID enumeration entirely. The kumbaya
+    // 3-of-3 MuSig2 scenario sets both at once.
+    let mut sim_entries: Vec<DeviceEntry> = Vec::new();
     if use_simulator() {
-        let device = LedgerSimulator::try_connect()
-            .await
-            .map_err(|e| format!("speculos connect: {e:?}"))?;
         let mut entry = DeviceEntry {
             kind: "ledger",
             model: "ledger_nano_x".to_string(),
@@ -32,11 +35,14 @@ pub async fn run_enumerate() -> Result<String, String> {
             needs_passphrase_sent: false,
             error: None,
         };
-        match async_hwi::HWI::get_master_fingerprint(&device).await {
-            Ok(fp) => entry.fingerprint = Some(format!("{fp:x}")),
-            Err(e) => entry.error = Some(format!("get_master_fingerprint: {e:?}")),
+        match LedgerSimulator::try_connect().await {
+            Ok(device) => match async_hwi::HWI::get_master_fingerprint(&device).await {
+                Ok(fp) => entry.fingerprint = Some(format!("{fp:x}")),
+                Err(e) => entry.error = Some(format!("get_master_fingerprint: {e:?}")),
+            },
+            Err(e) => entry.error = Some(format!("speculos connect: {e:?}")),
         }
-        return serde_json::to_string(&[entry]).map_err(|e| e.to_string());
+        sim_entries.push(entry);
     }
     if use_cc_simulator() {
         let mut entry = DeviceEntry {
@@ -58,8 +64,12 @@ pub async fn run_enumerate() -> Result<String, String> {
             }
             Err(e) => entry.error = Some(e),
         }
-        return serde_json::to_string(&[entry]).map_err(|e| e.to_string());
+        sim_entries.push(entry);
     }
+    if !sim_entries.is_empty() {
+        return serde_json::to_string(&sim_entries).map_err(|e| e.to_string());
+    }
+
     let mut api = HidApi::new().map_err(|e| format!("hidapi init: {e}"))?;
     let mut entries: Vec<DeviceEntry> = Vec::new();
 
