@@ -61,5 +61,6 @@ documentation and usage examples.
 
 The [`hwi-rs/`](hwi-rs/) crate provides a minimal CLI compatible with the
 Python [HWI](https://github.com/bitcoin-core/HWI) interface that Bitcoin Core
-calls via `-signer=<cmd>`. See [hwi-rs/README.md](hwi-rs/README.md) for build
-and usage instructions.
+calls via `-signer=<cmd>`. It currently supports `enumerate` for Ledger
+devices. See [hwi-rs/README.md](hwi-rs/README.md) for build and usage
+instructions.

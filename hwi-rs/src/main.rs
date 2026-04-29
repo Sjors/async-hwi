@@ -4,20 +4,44 @@
 //! `-signer=<cmd>`. JSON is written to stdout. On error a JSON object
 //! `{"error": "..."}` is written to stdout and the process exits non-zero.
 //!
-//! This first commit is a skeleton: argv parses, `--help` works, no
-//! subcommands are wired up yet. Subsequent commits add the HWI verbs.
+//! Currently supported:
+//!   * device:      Ledger (new app only; legacy not supported)
+//!   * subcommands: `enumerate`
+//!
+//! Source layout:
+//!   * [`cli`] — argv parsing
+//!   * [`devices`] — per-device modules (ledger, mock); enumeration,
+//!     transport-agnostic protocol bodies, JSON shape
+//!   * [`commands`] — per-subcommand `run_*` dispatch (mock → simulator → HID)
+
+mod cli;
+mod commands;
+mod devices;
 
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser};
 
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Args {}
+use cli::{Args, Command};
 
-fn main() -> ExitCode {
-    let _ = Args::parse();
-    let mut cmd = Args::command();
-    let _ = cmd.print_help();
-    ExitCode::FAILURE
+#[tokio::main]
+async fn main() -> ExitCode {
+    let args = Args::parse();
+    let Some(command) = args.command else {
+        let mut cmd = Args::command();
+        let _ = cmd.print_help();
+        return ExitCode::FAILURE;
+    };
+
+    let result = match command {
+        Command::Enumerate => commands::run_enumerate().await,
+    };
+
+    match result {
+        Ok(json) => {
+            println!("{json}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => commands::emit_error(e),
+    }
 }

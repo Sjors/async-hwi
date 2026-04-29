@@ -151,10 +151,11 @@ jobs:
         run: tail -n 200 /tmp/speculos/speculos.log || true
 
   # ----------------------------------------------------------------------------
-  # Build bitcoind + bitcoin-cli once (regtest, wallet-enabled) and upload
-  # them as an artifact for downstream end-to-end jobs to consume. Runs in
-  # parallel with linter / unit_tests / ledger_app so it never sits on the
-  # critical path.
+  # Build the heavy artifacts shared by the hwi-rs end-to-end jobs below.
+  #   - bitcoind+bitcoin-cli (used by both integration jobs)
+  #   - hwi-rs --release      (used by both integration jobs; built once)
+  # The ledger_app artifact is reused from the job above. These builders run
+  # in parallel with linter/unit_tests/ledger_app to minimise wall-clock time.
   # ----------------------------------------------------------------------------
   bitcoind_builder:
     name: bitcoind builder
@@ -212,11 +213,6 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # ----------------------------------------------------------------------------
-  # Build the hwi-rs binary in release mode once and upload it as an artifact
-  # for downstream end-to-end jobs to consume. Sanity-check that the binary
-  # at least runs (`--help`).
-  # ----------------------------------------------------------------------------
   hwi_rs_builder:
     name: hwi-rs builder
     runs-on: ubuntu-latest
@@ -237,11 +233,108 @@ jobs:
           sudo apt-get install -y libudev-dev pkg-config
       - name: Build hwi-rs (release)
         run: cargo build -p hwi-rs --release
-      - name: Smoke-test hwi-rs --help
-        run: ./target/release/hwi-rs --help
       - uses: actions/upload-artifact@v4
         with:
           name: hwi-rs
           path: target/release/hwi-rs
           if-no-files-found: error
           retention-days: 1
+
+  # ----------------------------------------------------------------------------
+  # Integration against the in-process software mock. Cheap, runs everywhere,
+  # catches almost every protocol regression.
+  # ----------------------------------------------------------------------------
+  mock_integration:
+    name: integration (mock)
+    needs: [bitcoind_builder, hwi_rs_builder]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 libevent-dev libcapnp-1.0.1
+
+      - name: Download bitcoind artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: bitcoind
+          path: bitcoin-core/build/bin
+      - name: Make bitcoind executable
+        run: chmod +x bitcoin-core/build/bin/bitcoind bitcoin-core/build/bin/bitcoin-cli
+
+      - name: Download hwi-rs artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: hwi-rs
+          path: target/release
+      - name: Make hwi-rs executable
+        run: chmod +x target/release/hwi-rs
+
+      - name: External signer scenario (regtest, mock)
+        run: bash hwi-rs/tests/run-core-scenario.sh
+
+  # ----------------------------------------------------------------------------
+  # Same scenario as mock_integration, but driven against a Speculos-emulated
+  # Ledger Nano X running the real Bitcoin app. Slower and more fragile, but
+  # independent of the mock job.
+  # ----------------------------------------------------------------------------
+  speculos_integration:
+    name: integration (speculos ledger)
+    needs: [bitcoind_builder, ledger_app, hwi_rs_builder]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SPECULOS_VERSION: '0.26.6'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3 python3-pip libevent-dev libcapnp-1.0.1 \
+            libusb-1.0-0 qemu-user-static \
+            libsdl2-image-2.0-0
+
+      - name: Install Speculos
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install "speculos==${SPECULOS_VERSION}"
+          speculos --help >/dev/null
+
+      - name: Download bitcoind artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: bitcoind
+          path: bitcoin-core/build/bin
+      - name: Make bitcoind executable
+        run: chmod +x bitcoin-core/build/bin/bitcoind bitcoin-core/build/bin/bitcoin-cli
+
+      - name: Download Ledger app artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ledger_app
+          path: ledger_app
+
+      - name: Download hwi-rs artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: hwi-rs
+          path: target/release
+      - name: Make hwi-rs executable
+        run: chmod +x target/release/hwi-rs
+
+      - name: External signer scenario (regtest, speculos)
+        env:
+          LEDGER_APP_ELF: ${{ github.workspace }}/ledger_app/app.elf
+          SPECULOS: speculos
+        run: bash hwi-rs/tests/run-core-scenario-speculos.sh
+
+      - name: Dump speculos log on failure
+        if: failure()
+        run: |
+          # Best effort — the scenario script writes speculos.log into the
+          # bitcoind datadir, which is a mktemp. Search /tmp for it.
+          find /tmp -maxdepth 4 -name 'speculos.log' -print -exec tail -n 200 {} \; 2>/dev/null || true
