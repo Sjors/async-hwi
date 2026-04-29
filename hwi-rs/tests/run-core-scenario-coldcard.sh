@@ -121,4 +121,19 @@ print(fp)
 ')"
 echo "coldcard master fingerprint: $FP"
 
+echo "== probing simulator via hwi-rs getdescriptors (regtest, account 0)"
+DESC_RAW="$(HWI_RS_COLDCARD_SIMULATOR=1 "$HWI_RS_BIN" --fingerprint "$FP" --chain regtest getdescriptors --account 0)"
+echo "$DESC_RAW"
+echo "$DESC_RAW" | FP="$FP" python3 -c "
+import json, os, sys
+out = json.load(sys.stdin)
+fp = os.environ['FP']
+recv = out.get('receive', [])
+intl = out.get('internal', [])
+assert len(recv) == 4 and len(intl) == 4, f'expected 4 receive + 4 internal, got {len(recv)} + {len(intl)}'
+for d in recv + intl:
+    assert '#' in d, f'descriptor missing checksum: {d}'
+    assert fp in d, f'descriptor missing fingerprint {fp}: {d}'
+"
+
 echo "== OK"

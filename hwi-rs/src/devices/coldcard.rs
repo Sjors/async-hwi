@@ -5,8 +5,13 @@
 //! by the vendored `coldcard` crate (`coldcard-vendored/src/transport.rs`);
 //! everything below is wire-protocol-agnostic.
 
-use async_hwi::coldcard::api::Coldcard;
-use bitcoin::bip32::Fingerprint;
+use async_hwi::coldcard::api::{self as ckcc, protocol::DerivationPath as CkccPath, Coldcard};
+use bitcoin::bip32::{DerivationPath, Fingerprint};
+use hidapi::HidApi;
+
+use crate::cli::Chain;
+use crate::commands::GetDescriptorsOut;
+use crate::descriptor::{format_descriptor, ADDR_TYPES};
 
 /// Default path of the headless `coldcard-mpy` simulator's Unix datagram
 /// socket. Matches the upstream firmware's hard-coded location.
@@ -50,4 +55,71 @@ pub fn open_simulator() -> Result<(Coldcard, Fingerprint), String> {
     let info = info
         .ok_or_else(|| "coldcard simulator returned no xpub: device not initialised".to_string())?;
     Ok((cc, Fingerprint::from(info.fingerprint)))
+}
+
+/// Find a HID-attached Coldcard whose master fingerprint matches `want`.
+///
+/// Coldcards always expose a single HID interface, so this is a simple
+/// vid/pid filter followed by an open + xpub fetch. The fingerprint
+/// returned by the post-handshake `XpubInfo` is the master fingerprint
+/// (already a hash160 of the master pubkey), so no extra round trip is
+/// needed.
+pub fn open_coldcard_by_fingerprint(
+    api: &mut HidApi,
+    want: Fingerprint,
+) -> Result<Coldcard, String> {
+    let mut ck_api = ckcc::Api::from_borrowed(api);
+    let serials = ck_api
+        .detect()
+        .map_err(|e| format!("coldcard detect: {e:?}"))?;
+    for sn in serials {
+        let (cc, info) = match ck_api.open(&sn, None) {
+            Ok(x) => x,
+            Err(_) => continue,
+        };
+        if let Some(info) = info {
+            if Fingerprint::from(info.fingerprint) == want {
+                return Ok(cc);
+            }
+        }
+    }
+    Err(format!("no Coldcard device matching fingerprint {want:x}"))
+}
+
+// --- transport-agnostic protocol bodies --------------------------------------
+
+fn to_ckcc_path(path: &DerivationPath) -> Result<CkccPath, String> {
+    let s = path.to_string();
+    let s = if s.starts_with("m/") || s == "m" {
+        s
+    } else {
+        format!("m/{s}")
+    };
+    CkccPath::new(&s).map_err(|e| format!("coldcard path {s}: {e:?}"))
+}
+
+pub fn do_getdescriptors(
+    cc: &mut Coldcard,
+    fingerprint: Fingerprint,
+    chain: Chain,
+    account: u32,
+) -> Result<String, String> {
+    let mut receive = Vec::new();
+    let mut internal = Vec::new();
+
+    for &(purpose, wrapper) in ADDR_TYPES {
+        let coin = chain.coin_type();
+        let path: DerivationPath = format!("m/{purpose}h/{coin}h/{account}h")
+            .parse()
+            .map_err(|e| format!("path parse: {e}"))?;
+        let xpub_str = cc
+            .xpub(Some(to_ckcc_path(&path)?))
+            .map_err(|e| format!("coldcard xpub({path}): {e:?}"))?;
+        let origin = format!("[{fingerprint:x}/{purpose}h/{coin}h/{account}h]");
+        receive.push(format_descriptor(wrapper, &origin, &xpub_str, 0));
+        internal.push(format_descriptor(wrapper, &origin, &xpub_str, 1));
+    }
+
+    let out = GetDescriptorsOut { receive, internal };
+    serde_json::to_string(&out).map_err(|e| e.to_string())
 }
