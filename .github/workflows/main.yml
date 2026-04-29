@@ -50,3 +50,102 @@ jobs:
           sudo apt-get update &&
           sudo apt-get install libudev-dev pkg-config &&
           cargo test --verbose --color always -- --nocapture
+
+  # ----------------------------------------------------------------------------
+  # Build the Ledger Bitcoin app once so the Speculos job (and any future
+  # jobs added to this workflow) can consume the .elf as an artifact without
+  # rebuilding it.
+  # ----------------------------------------------------------------------------
+  ledger_app:
+    name: build ledger bitcoin app
+    needs: linter
+    runs-on: ubuntu-latest
+    # Pin to 5.3.2 (current `:latest`); SDK is new enough for app-bitcoin-new 2.4.6.
+    container: ghcr.io/ledgerhq/ledger-app-builder/ledger-app-builder:5.3.2
+    steps:
+      - name: Build Ledger Bitcoin app (Nano X)
+        # Pin to v2.4.6 (latest released `app-bitcoin-new` tag).
+        # Speculos 0.26.6 is the matching simulator version.
+        run: |
+          git clone --branch '2.4.6' --depth 1 \
+            https://github.com/LedgerHQ/app-bitcoin-new.git
+          cd app-bitcoin-new
+          make DEBUG=1 BOLOS_SDK="$NANOX_SDK"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ledger_app
+          path: app-bitcoin-new/bin/app.elf
+          if-no-files-found: error
+          retention-days: 1
+
+  # ----------------------------------------------------------------------------
+  # Drive the in-tree LedgerSimulator transport (src/ledger.rs) against a
+  # real Ledger Bitcoin app running under Speculos. Catches regressions in
+  # the APDU plumbing without needing physical hardware.
+  # ----------------------------------------------------------------------------
+  speculos:
+    name: speculos integration
+    needs: [unit_tests, ledger_app]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Pin Speculos to a version compatible with the SDK above.
+      SPECULOS_VERSION: '0.26.6'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: 1.85.0
+          cache: false
+
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libudev-dev pkg-config python3 python3-pip \
+            libusb-1.0-0 qemu-user-static \
+            libsdl2-image-2.0-0
+
+      - name: Install Speculos
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install "speculos==${SPECULOS_VERSION}"
+          speculos --help >/dev/null
+
+      - name: Download Ledger app artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ledger_app
+          path: ledger_app
+
+      - name: Launch Speculos
+        run: |
+          mkdir -p /tmp/speculos
+          nohup speculos \
+            --display headless \
+            --apdu-port 9999 \
+            ledger_app/app.elf \
+            > /tmp/speculos/speculos.log 2>&1 &
+          # Wait for the APDU port to come up.
+          for _ in $(seq 1 60); do
+            if (echo > /dev/tcp/127.0.0.1/9999) 2>/dev/null; then
+              echo "speculos is up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "speculos did not come up; log:" >&2
+          tail -200 /tmp/speculos/speculos.log >&2
+          exit 1
+        shell: bash
+
+      - name: Run ignored speculos tests
+        # --test-threads=1: Speculos exposes a single APDU socket; running
+        # multiple connections in parallel interleaves request and response
+        # frames.
+        run: cargo test --features ledger --test ledger_speculos -- --ignored --nocapture --test-threads=1
+
+      - name: Dump speculos log on failure
+        if: failure()
+        run: tail -n 200 /tmp/speculos/speculos.log || true
