@@ -16,7 +16,7 @@ use hidapi::HidApi;
 use miniscript::{Descriptor, DescriptorPublicKey};
 
 use crate::cli::Chain;
-use crate::commands::GetDescriptorsOut;
+use crate::commands::{DisplayAddressReq, GetDescriptorsOut};
 use crate::descriptor::{address_from_descriptor, format_descriptor, ADDR_TYPES};
 use crate::policy::{classify_singlesig, collect_signing_groups, SingleSig};
 
@@ -255,19 +255,21 @@ pub fn do_signtx(
     Ok(serde_json::json!({ "psbt": out }).to_string())
 }
 
-// --- BIP388 / MuSig2 (policy registration) -----------------------------------
+// --- BIP388 / MuSig2 (policy-mode) ------------------------------------------
 //
 // Coldcard's BIP388 model differs from Ledger's: there is no HMAC. The
 // device stores the descriptor by name (uploaded as a small JSON blob via
-// `miniscript_enroll`) and subsequent RPCs can look it up by that name.
-// We still return a (placeholder) 32-byte hex hmac from `register` so
-// Bitcoin Core's wallet accepts the response and round-trips it back to
-// us. The on-screen confirmation that registers the wallet runs as an
-// asynchronous UX flow (see `auth.maybe_enroll_xpub` in the firmware), so
-// the `mins` USB command returns immediately after queueing the file. We
-// poll `miniscript_get(name)` to know when the device has actually
-// committed the wallet; on the simulator we drive the confirmation by
-// injecting `y` keypresses through the `XKEY` test command.
+// `miniscript_enroll`), and identifies it on subsequent address-display
+// and sign-PSBT calls by that name. We still return a (placeholder)
+// 32-byte hex hmac from `register` so Bitcoin Core's wallet accepts the
+// response and round-trips it back to us — we just ignore it on the
+// device side and look the policy up by name. The on-screen
+// confirmation that registers the wallet runs as an asynchronous UX
+// flow (see `auth.maybe_enroll_xpub` in the firmware), so the `mins`
+// USB command returns immediately after queueing the file. We poll
+// `miniscript_get(name)` to know when the device has actually committed
+// the wallet; on the simulator we drive the confirmation by injecting
+// `y` keypresses through the `XKEY` test command.
 
 /// Placeholder hmac returned from Coldcard's `register`. The Coldcard
 /// BIP388 implementation has no real hmac concept (the wallet is keyed
@@ -280,6 +282,21 @@ const COLDCARD_PLACEHOLDER_HMAC: &str =
 
 fn make_descriptor_name(name: &str) -> Result<DescriptorName, String> {
     DescriptorName::new(name).map_err(|e| format!("coldcard descriptor name {name:?}: {e:?}"))
+}
+
+/// On the simulator, send a few `y` keypresses to dismiss whatever UX
+/// modal was just opened by the previous USB command. The firmware's
+/// `numpad.inject` queues the entire `args` payload as a single
+/// keypress, so we issue several one-byte sends to walk through a
+/// confirmation prompt. The full enroll/sign flows additionally pump
+/// keypresses inside the completion-poll loop.
+fn sim_dismiss(cc: &mut Coldcard) {
+    if !use_simulator() {
+        return;
+    }
+    for _ in 0..5 {
+        let _ = cc.sim_keypress(b"y");
+    }
 }
 
 /// Register a BIP388 wallet policy on a Coldcard. Mirrors
@@ -326,4 +343,37 @@ pub fn do_register(
     }
 
     Ok(serde_json::json!({ "hmac": COLDCARD_PLACEHOLDER_HMAC }).to_string())
+}
+
+/// Display an address for a previously registered BIP388 wallet
+/// policy. Coldcard looks the wallet up by name; the supplied hmac is
+/// ignored (see `COLDCARD_PLACEHOLDER_HMAC`).
+pub fn do_displayaddress_policy(
+    cc: &mut Coldcard,
+    chain: Chain,
+    req: DisplayAddressReq,
+) -> Result<String, String> {
+    let DisplayAddressReq::Policy {
+        name,
+        index,
+        change,
+        ..
+    } = req
+    else {
+        return Err("do_displayaddress_policy called with non-policy request".into());
+    };
+
+    let descriptor_name = make_descriptor_name(&name)?;
+    let address = cc
+        .miniscript_address(descriptor_name, change, index)
+        .map_err(|e| format!("coldcard miniscript_address({name:?}): {e:?}"))?;
+    sim_dismiss(cc);
+
+    Ok(serde_json::json!({
+        "address": address,
+        "index": index,
+        "change": change,
+        "chain": format!("{chain:?}").to_lowercase(),
+    })
+    .to_string())
 }

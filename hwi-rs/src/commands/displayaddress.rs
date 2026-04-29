@@ -5,8 +5,9 @@ use bitcoin::bip32::Fingerprint;
 
 use crate::cli::Chain;
 use crate::devices::coldcard::{
-    do_displayaddress as cc_displayaddress, open_coldcard_by_fingerprint,
-    open_simulator as open_cc_simulator, use_simulator as use_cc_simulator,
+    do_displayaddress as cc_displayaddress, do_displayaddress_policy as cc_displayaddress_policy,
+    open_coldcard_by_fingerprint, open_simulator as open_cc_simulator,
+    use_simulator as use_cc_simulator,
 };
 use crate::devices::ledger::{
     do_displayaddress, do_displayaddress_policy, open_ledger_by_fingerprint, use_simulator,
@@ -59,18 +60,14 @@ pub async fn run_displayaddress(
         let (mut cc, _) = open_cc_simulator()?;
         return match req {
             DisplayAddressReq::SingleSig { desc } => cc_displayaddress(&mut cc, chain, &desc),
-            DisplayAddressReq::Policy { .. } => {
-                return Err("displayaddress --policy-name is not yet supported for Coldcard".into())
-            }
+            DisplayAddressReq::Policy { .. } => cc_displayaddress_policy(&mut cc, chain, req),
         };
     }
     let mut api = HidApi::new().map_err(|e| format!("hidapi init: {e}"))?;
     if let Ok(mut cc) = open_coldcard_by_fingerprint(&mut api, fingerprint) {
         return match req {
             DisplayAddressReq::SingleSig { desc } => cc_displayaddress(&mut cc, chain, &desc),
-            DisplayAddressReq::Policy { .. } => {
-                return Err("displayaddress --policy-name is not yet supported for Coldcard".into())
-            }
+            DisplayAddressReq::Policy { .. } => cc_displayaddress_policy(&mut cc, chain, req),
         };
     }
     let device = open_ledger_by_fingerprint(&api, fingerprint).await?;

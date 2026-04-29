@@ -7,14 +7,15 @@
 #     through coldcard-signer.sh.
 #   * Build the `musig_hww` wallet (cosigner A on the Coldcard, cosigner
 #     B as a hot key) and import the tr(musig(A,B)/<0;1>/*) descriptor.
-#   * Register the policy on the device and verify Bitcoin Core stores
-#     the returned placeholder hmac.
+#   * Register the policy on the device, drive walletdisplayaddress,
+#     and verify Bitcoin Core stores the returned placeholder hmac.
 #
 # Coldcard differences vs the Ledger speculos scenario:
 #   * BIP388 wallets on Coldcard are keyed by name, not by HMAC, so the
 #     hmac round-tripped through Bitcoin Core's `getwalletinfo.bip388`
 #     is a 32-byte zero placeholder produced by hwi-rs (see
-#     COLDCARD_PLACEHOLDER_HMAC in src/devices/coldcard.rs).
+#     COLDCARD_PLACEHOLDER_HMAC in src/devices/coldcard.rs). The device
+#     ignores it on displayaddress and looks up the wallet by name.
 #   * On-device confirmations are driven by `XKEY` keypress injection
 #     embedded in hwi-rs (see coldcard-vendored sim_keypress), so
 #     unlike the Ledger scenario there is no external autopressing
@@ -238,4 +239,10 @@ expected = os.environ["HMAC"]
 assert stored == expected, f"hmac mismatch: stored {stored} vs registerpolicy {expected}"
 '
 
-echo "== OK: registered MuSig2 wallet policy via hwi-rs and a Coldcard simulator"
+echo "== walletdisplayaddress (Core -> hwi-rs displayaddress --policy-name -> coldcard simulator)"
+WDA_OUT="$(wallet_cli walletdisplayaddress "$ADDR")"
+echo "$WDA_OUT"
+WDA_ADDR="$(echo "$WDA_OUT" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["address"])')"
+[[ "$WDA_ADDR" == "$ADDR" ]] || { echo "walletdisplayaddress echoed unexpected address: $WDA_ADDR" >&2; exit 1; }
+
+echo "== OK: drove on-device address display for the registered MuSig2 policy"
