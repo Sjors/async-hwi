@@ -338,3 +338,68 @@ jobs:
           # Best effort — the scenario script writes speculos.log into the
           # bitcoind datadir, which is a mktemp. Search /tmp for it.
           find /tmp -maxdepth 4 -name 'speculos.log' -print -exec tail -n 200 {} \; 2>/dev/null || true
+
+  # ----------------------------------------------------------------------------
+  # Build the Coldcard `coldcard-mpy` simulator from upstream firmware (tag
+  # pinned in `hwi-rs/tests/coldcard-sim/firmware-tag.txt`). The resulting
+  # tarball is cached by tag + Dockerfile + patch hashes so later runs at
+  # the same pin can skip rebuilding, and downstream jobs can restore that
+  # same archive directly instead of bouncing it through an artifact upload.
+  # ----------------------------------------------------------------------------
+  coldcard_sim:
+    name: build coldcard simulator
+    needs: linter
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read firmware tag
+        id: pin
+        run: |
+          tag="$(tr -d '[:space:]' < hwi-rs/tests/coldcard-sim/firmware-tag.txt)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Check simulator archive cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          # Only check whether the final tarball exists in cache. The builder
+          # job does not need to download it on hits; the integration job will
+          # restore it for actual use.
+          path: coldcard-sim.tar.gz
+          key: coldcard-sim-archive-v1-${{ runner.os }}-${{ steps.pin.outputs.tag }}-${{ hashFiles('hwi-rs/tests/coldcard-sim/Dockerfile', 'hwi-rs/tests/coldcard-sim/*.patch', 'hwi-rs/tests/coldcard-sim/build.sh') }}
+          lookup-only: true
+
+      - name: Install podman
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+
+      - name: Build simulator
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          WORK_DIR: ${{ github.workspace }}/cc-sim-work
+          CONTAINER_RUNTIME: podman
+        run: bash hwi-rs/tests/coldcard-sim/build.sh
+
+      - name: Sanity-check built simulator
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          test -x cc-sim-work/firmware/unix/coldcard-mpy
+          test -f cc-sim-work/firmware/unix/simulator.py
+
+      - name: Tar built tree (excluding .git)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          cd cc-sim-work
+          tar --exclude='**/.git' -czf "${{ github.workspace }}/coldcard-sim.tar.gz" firmware
+
+      - name: Save simulator archive cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: coldcard-sim.tar.gz
+          key: coldcard-sim-archive-v1-${{ runner.os }}-${{ steps.pin.outputs.tag }}-${{ hashFiles('hwi-rs/tests/coldcard-sim/Dockerfile', 'hwi-rs/tests/coldcard-sim/*.patch', 'hwi-rs/tests/coldcard-sim/build.sh') }}
+
