@@ -1055,6 +1055,7 @@ dependencies = [
  "async-hwi",
  "bitcoin",
  "clap",
+ "hidapi",
  "miniscript",
  "serde",
  "serde_json",
