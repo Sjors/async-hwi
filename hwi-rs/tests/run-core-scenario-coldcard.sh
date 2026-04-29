@@ -209,4 +209,28 @@ want = os.environ["ADDR"]
 assert got == want, f"walletdisplayaddress returned {got!r}, expected {want!r}"
 '
 
+echo "== fund the wallet so we have a UTXO to sign"
+"${CLI[@]}" generatetoaddress 101 "$ADDR" >/dev/null
+BURN="$("${CLI[@]}" -rpcwallet=hww getnewaddress)"
+FUND="$("${CLI[@]}" -rpcwallet=hww -named walletcreatefundedpsbt \
+    outputs="[{\"$BURN\":1.0}]" \
+    options='{"feeRate":0.00010000}')"
+PSBT="$(echo "$FUND" | python3 -c 'import json,sys;print(json.load(sys.stdin)["psbt"])')"
+echo "PSBT to sign: $PSBT"
+
+# No autopress loop is needed: hwi-rs's signtx path injects `y`
+# keypresses into the simulator's numpad via the `XKEY` USB test
+# command (see coldcard-vendored/src/lib.rs::sim_keypress) while
+# polling get_signed_tx, which is enough to walk through Coldcard's
+# review/approve UX in the headless build.
+echo "== walletprocesspsbt (drives Core -> hwi-rs --stdin signtx -> coldcard simulator)"
+SIGNED="$("${CLI[@]}" -rpcwallet=hww walletprocesspsbt "$PSBT" true)"
+echo "$SIGNED"
+
+echo "$SIGNED" | python3 -c '
+import json, sys
+out = json.load(sys.stdin)
+assert out.get("complete") is True, f"PSBT not fully signed by device: {out!r}"
+'
+
 echo "== OK"

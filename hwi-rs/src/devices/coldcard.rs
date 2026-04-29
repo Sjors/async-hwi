@@ -8,16 +8,17 @@
 use async_hwi::coldcard::api::{
     self as ckcc,
     protocol::{AddressFormat, DerivationPath as CkccPath},
-    Coldcard,
+    Coldcard, SignMode,
 };
 use bitcoin::bip32::{DerivationPath, Fingerprint};
+use bitcoin::psbt::Psbt;
 use hidapi::HidApi;
 use miniscript::{Descriptor, DescriptorPublicKey};
 
 use crate::cli::Chain;
 use crate::commands::GetDescriptorsOut;
 use crate::descriptor::{address_from_descriptor, format_descriptor, ADDR_TYPES};
-use crate::policy::{classify_singlesig, SingleSig};
+use crate::policy::{classify_singlesig, collect_signing_groups, SingleSig};
 
 /// Default path of the headless `coldcard-mpy` simulator's Unix datagram
 /// socket. Matches the upstream firmware's hard-coded location.
@@ -174,4 +175,74 @@ pub fn do_displayaddress(cc: &mut Coldcard, chain: Chain, desc: &str) -> Result<
     }
 
     Ok(serde_json::json!({ "address": address }).to_string())
+}
+
+pub fn do_signtx(
+    cc: &mut Coldcard,
+    fingerprint: Fingerprint,
+    chain: Chain,
+    psbt_b64: &str,
+) -> Result<String, String> {
+    use bitcoin::base64::Engine as _;
+
+    let raw = bitcoin::base64::engine::general_purpose::STANDARD
+        .decode(psbt_b64.trim())
+        .map_err(|e| format!("psbt base64 decode: {e}"))?;
+    let mut psbt = Psbt::deserialize(&raw).map_err(|e| format!("psbt parse: {e}"))?;
+
+    // Sanity: PSBT must reference at least one of our keys. Coldcard will
+    // sign whichever inputs it can, but if none belong to this device we
+    // would loop forever in `get_signed_tx`.
+    let groups = collect_signing_groups(&psbt, fingerprint, chain.coin_type());
+    if groups.is_empty() {
+        return Err(format!(
+            "no PSBT input has a BIP32 derivation for fingerprint {fingerprint:x} \
+             on chain {chain:?} (coin {})",
+            chain.coin_type()
+        ));
+    }
+
+    cc.sign_psbt(&psbt.serialize(), SignMode::Signed)
+        .map_err(|e| format!("coldcard sign_psbt: {e:?}"))?;
+
+    // Poll until the device produces the signed PSBT. On real hardware
+    // the user has to physically press OK; in CI we drive the simulator
+    // by injecting `y` keypresses through the `XKEY` USB test command
+    // (handled by `usb_test_commands.do_usb_command` in the
+    // `coldcard-mpy` build only). There is no useful timeout to pick
+    // here — Bitcoin Core's external-signer call has its own.
+    let sim = use_simulator();
+    let signed = loop {
+        if sim {
+            // Approve any prompts that may be on screen. The firmware
+            // ignores extra keypresses when no UX is waiting for input.
+            let _ = cc.sim_keypress(b"y");
+        }
+        match cc
+            .get_signed_tx()
+            .map_err(|e| format!("coldcard get_signed_tx: {e:?}"))?
+        {
+            Some(tx) => break tx,
+            None => std::thread::sleep(std::time::Duration::from_millis(200)),
+        }
+    };
+
+    let mut signed = Psbt::deserialize(&signed).map_err(|e| format!("signed psbt parse: {e}"))?;
+    // Merge sigs back into the caller's PSBT to preserve any other PSBT
+    // fields the device may have stripped (mirrors what `async-hwi`'s
+    // `Coldcard::sign_tx` does).
+    for i in 0..signed.inputs.len() {
+        psbt.inputs[i]
+            .partial_sigs
+            .append(&mut signed.inputs[i].partial_sigs);
+        psbt.inputs[i]
+            .tap_script_sigs
+            .append(&mut signed.inputs[i].tap_script_sigs);
+        if let Some(sig) = signed.inputs[i].tap_key_sig {
+            psbt.inputs[i].tap_key_sig = Some(sig);
+        }
+    }
+
+    let out = bitcoin::base64::engine::general_purpose::STANDARD.encode(psbt.serialize());
+    Ok(serde_json::json!({ "psbt": out }).to_string())
 }
