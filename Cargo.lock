@@ -479,8 +479,6 @@ checksum = "1462739cb27611015575c0c11df5df7601141071f07518d56fcc1be504cbec97"
 [[package]]
 name = "coldcard"
 version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1178252cca421753b1024d240d43e502b019f51ca8022652587cdad4347d58b7"
 dependencies = [
  "aes",
  "base58",
@@ -488,6 +486,7 @@ dependencies = [
  "ctr",
  "hidapi",
  "k256",
+ "log",
  "rand",
 ]
 
