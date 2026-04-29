@@ -12,6 +12,8 @@
 # was prepared by the `coldcard_sim` CI job.
 #
 # Required env (set automatically in CI):
+#   BITCOIND        Path to bitcoind. Default: ./bitcoin-core/build/bin/bitcoind
+#   BITCOIN_CLI     Path to bitcoin-cli. Default: ./bitcoin-core/build/bin/bitcoin-cli
 #   HWI_RS_BIN      Path to hwi-rs binary. Default: ./target/release/hwi-rs
 #
 # Optional env:
@@ -31,12 +33,16 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+BITCOIND="${BITCOIND:-$REPO_ROOT/bitcoin-core/build/bin/bitcoind}"
+BITCOIN_CLI="${BITCOIN_CLI:-$REPO_ROOT/bitcoin-core/build/bin/bitcoin-cli}"
 export HWI_RS_BIN="${HWI_RS_BIN:-$REPO_ROOT/target/release/hwi-rs}"
 
-if [[ ! -x "$HWI_RS_BIN" ]]; then
-    echo "missing executable: $HWI_RS_BIN" >&2
-    exit 1
-fi
+for f in "$BITCOIND" "$BITCOIN_CLI" "$HWI_RS_BIN"; do
+    if [[ ! -e "$f" ]]; then
+        echo "missing file: $f" >&2
+        exit 1
+    fi
+done
 
 if [[ -z "${COLDCARD_SIM_DIR:-}" && -z "${COLDCARD_SIM_IMAGE:-}" ]]; then
     echo "set either COLDCARD_SIM_DIR (native) or COLDCARD_SIM_IMAGE (podman)" >&2
@@ -46,9 +52,12 @@ fi
 DATADIR="$(mktemp -d)"
 SIM_LOG="$DATADIR/coldcard-sim.log"
 SOCK_PATH=/tmp/ckcc-simulator.sock
+RPCPORT=28453
+SIGNER="$REPO_ROOT/hwi-rs/tests/coldcard-signer.sh"
 CONTAINER_NAME="hwi-rs-cc-sim-$$"
 
 cleanup() {
+    "$BITCOIN_CLI" -regtest -datadir="$DATADIR" -rpcport="$RPCPORT" stop >/dev/null 2>&1 || true
     if [[ -n "${SIM_PID:-}" ]]; then
         kill "$SIM_PID" 2>/dev/null || true
         wait "$SIM_PID" 2>/dev/null || true
@@ -57,6 +66,7 @@ cleanup() {
         podman rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
     fi
     rm -f "$SOCK_PATH"
+    sleep 1
     rm -rf "$DATADIR"
 }
 trap cleanup EXIT
@@ -119,8 +129,6 @@ assert fp, f"no fingerprint reported: {e!r}"
 assert e.get("model", "").startswith("coldcard"), f"unexpected model: {e!r}"
 print(fp)
 ')"
-echo "coldcard master fingerprint: $FP"
-
 echo "== probing simulator via hwi-rs getdescriptors (regtest, account 0)"
 DESC_RAW="$(HWI_RS_COLDCARD_SIMULATOR=1 "$HWI_RS_BIN" --fingerprint "$FP" --chain regtest getdescriptors --account 0)"
 echo "$DESC_RAW"
@@ -135,5 +143,70 @@ for d in recv + intl:
     assert '#' in d, f'descriptor missing checksum: {d}'
     assert fp in d, f'descriptor missing fingerprint {fp}: {d}'
 "
+
+echo "== launching bitcoind (regtest) with -signer=$SIGNER"
+"$BITCOIND" -regtest -datadir="$DATADIR" -daemon \
+    -signer="$SIGNER" \
+    -fallbackfee=0.0001 \
+    -rpcport="$RPCPORT" -port=28454 -listen=0
+
+CLI=("$BITCOIN_CLI" -regtest -datadir="$DATADIR" -rpcport="$RPCPORT")
+
+echo "== waiting for RPC"
+for _ in $(seq 1 30); do
+    if "${CLI[@]}" getblockchaininfo >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+
+echo "== enumeratesigners (Core's view)"
+ENUM_OUT="$("${CLI[@]}" enumeratesigners)"
+echo "$ENUM_OUT"
+FP_CORE="$(echo "$ENUM_OUT" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+signers = data.get("signers", [])
+assert len(signers) == 1, f"expected exactly one signer, got {signers!r}"
+print(signers[0]["fingerprint"])
+')"
+if [[ "$FP_CORE" != "$FP" ]]; then
+    echo "fingerprint mismatch: enumerate=$FP, enumeratesigners=$FP_CORE" >&2
+    exit 1
+fi
+
+echo "== createwallet (external_signer=true, regtest)"
+"${CLI[@]}" -named createwallet \
+    wallet_name=hww \
+    disable_private_keys=true \
+    blank=true \
+    descriptors=true \
+    external_signer=true
+
+echo "== getwalletinfo"
+WI="$("${CLI[@]}" -rpcwallet=hww getwalletinfo)"
+echo "$WI" | python3 -c '
+import json, sys
+w = json.load(sys.stdin)
+assert w.get("external_signer") is True, f"external_signer flag not set: {w!r}"
+'
+
+echo "== getnewaddress (must derive locally from imported descriptors)"
+ADDR="$("${CLI[@]}" -rpcwallet=hww getnewaddress)"
+echo "$ADDR"
+case "$ADDR" in
+    bcrt1*) ;;  # bech32 / bech32m regtest
+    *) echo "unexpected address format: $ADDR" >&2; exit 1 ;;
+esac
+
+echo "== walletdisplayaddress (Core -> hwi-rs displayaddress -> coldcard simulator)"
+DISP="$("${CLI[@]}" -rpcwallet=hww walletdisplayaddress "$ADDR")"
+echo "$DISP"
+echo "$DISP" | ADDR="$ADDR" python3 -c '
+import json, os, sys
+got = json.load(sys.stdin).get("address")
+want = os.environ["ADDR"]
+assert got == want, f"walletdisplayaddress returned {got!r}, expected {want!r}"
+'
 
 echo "== OK"

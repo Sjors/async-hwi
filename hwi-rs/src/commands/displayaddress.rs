@@ -4,6 +4,10 @@ use async_hwi::ledger::{HidApi, LedgerSimulator};
 use bitcoin::bip32::Fingerprint;
 
 use crate::cli::Chain;
+use crate::devices::coldcard::{
+    do_displayaddress as cc_displayaddress, open_coldcard_by_fingerprint,
+    open_simulator as open_cc_simulator, use_simulator as use_cc_simulator,
+};
 use crate::devices::ledger::{do_displayaddress, open_ledger_by_fingerprint, use_simulator};
 use crate::devices::mock::MockDevice;
 
@@ -21,7 +25,14 @@ pub async fn run_displayaddress(
             .map_err(|e| format!("speculos connect: {e:?}"))?;
         return do_displayaddress(device, fingerprint, chain, desc).await;
     }
-    let api = HidApi::new().map_err(|e| format!("hidapi init: {e}"))?;
+    if use_cc_simulator() {
+        let (mut cc, _) = open_cc_simulator()?;
+        return cc_displayaddress(&mut cc, chain, desc);
+    }
+    let mut api = HidApi::new().map_err(|e| format!("hidapi init: {e}"))?;
+    if let Ok(mut cc) = open_coldcard_by_fingerprint(&mut api, fingerprint) {
+        return cc_displayaddress(&mut cc, chain, desc);
+    }
     let device = open_ledger_by_fingerprint(&api, fingerprint).await?;
     do_displayaddress(device, fingerprint, chain, desc).await
 }
