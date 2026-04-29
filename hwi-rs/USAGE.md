@@ -300,3 +300,15 @@ For the fully-automated regtest version (helper miner wallet,
 auto-clicking speculos, single-call `send`, and assertions on the
 broadcast tx), see
 [`tests/run-musig-scenario-speculos.sh`](tests/run-musig-scenario-speculos.sh).
+
+> **Device unplugged before `send`.** The two-round fallback above
+> also covers the case where the Ledger isn't attached when `send`
+> runs (e.g. signer at a different location).
+> `send` returns `complete=false` with the round-1 PSBT carrying the
+> hot cosigner's pub nonce; once the device is back, the same
+> `walletprocesspsbt psbt=... sign=true finalize=true` call drives
+> both rounds and aggregates. The
+> [`tests/run-musig-disconnect-scenario-speculos.sh`](tests/run-musig-disconnect-scenario-speculos.sh)
+> regression simulates this with a wrapper signer script that
+> short-circuits to `{"error":"device disconnected"}` while a flag
+> file exists.
