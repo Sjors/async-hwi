@@ -1,0 +1,16 @@
+name: Set up hwi-rs
+description: >
+  Download the hwi-rs release binary published by the hwi_rs_builder
+  job and mark it executable. Used by every integration job.
+
+runs:
+  using: composite
+  steps:
+    - name: Download hwi-rs artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: hwi-rs
+        path: target/release
+    - name: Make hwi-rs executable
+      shell: bash
+      run: chmod +x target/release/hwi-rs
