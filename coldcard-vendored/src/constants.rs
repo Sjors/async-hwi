@@ -4,6 +4,7 @@ pub const AFC_SEGWIT: u8 = 0x02;
 pub const AFC_BECH32: u8 = 0x04;
 pub const AFC_SCRIPT: u8 = 0x08;
 pub const AFC_WRAPPED: u8 = 0x10;
+pub const AFC_BECH32M: u8 = 0x20;
 
 pub const USER_AUTH_SHOW_QR: u8 = 0x80;
 

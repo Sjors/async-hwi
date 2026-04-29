@@ -86,6 +86,10 @@ pub enum AddressFormat {
     P2WSH = AFC_SCRIPT | AFC_SEGWIT | AFC_BECH32,
     P2WPKH_P2SH = AFC_WRAPPED | AFC_PUBKEY | AFC_SEGWIT,
     P2WSH_P2SH = AFC_WRAPPED | AFC_SCRIPT | AFC_SEGWIT,
+    /// Single-key Taproot (`bc1p…`). Accepted by the `address` ckcc
+    /// message in firmware ≥6.x; matches `AF_P2TR` in
+    /// `ckcc-protocol/ckcc/constants.py`.
+    P2TR = AFC_PUBKEY | AFC_SEGWIT | AFC_BECH32M,
 }
 
 #[repr(u8)]
@@ -201,6 +205,10 @@ pub(crate) enum Request {
         totp_time: u32,
     },
     GetStorageLocker,
+    /// Simulator-only test command (`XKEY`): inject keypresses into the
+    /// numpad. Handled by `usb_test_commands.do_usb_command` in the
+    /// `coldcard-mpy` build; the production firmware ignores it.
+    SimKey(Vec<u8>),
 }
 
 impl Request {
@@ -212,6 +220,12 @@ impl Request {
             Request::Reboot => cmd("rebo"),
 
             Request::Version => cmd("vers"),
+
+            Request::SimKey(keys) => {
+                let mut buf = cmd("XKEY");
+                buf.extend(keys);
+                buf
+            }
 
             Request::Ping(msg) => {
                 let mut buf = cmd("ping");

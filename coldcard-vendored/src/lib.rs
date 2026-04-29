@@ -40,7 +40,12 @@
 pub mod constants;
 pub mod firmware;
 pub mod protocol;
+pub mod transport;
 pub mod util;
+
+#[cfg(unix)]
+pub use transport::UnixDatagramTransport;
+pub use transport::{Transport, TransportError};
 
 use protocol::{DerivationPath, DescriptorName, Request, Response, Username};
 use util::{MaybeOwned, parse_string_vec};
@@ -191,7 +196,7 @@ pub enum SignMode {
 
 /// Connected and initialized Coldcard device ready for use.
 pub struct Coldcard {
-    cc: hidapi::HidDevice,
+    cc: Box<dyn Transport>,
     session_key: [u8; 32],
     encrypt: Aes256Ctr,
     decrypt: Aes256Ctr,
@@ -212,19 +217,52 @@ impl Coldcard {
         sn: impl AsRef<str>,
         opts: Option<Options>,
     ) -> Result<(Self, Option<XpubInfo>), Error> {
-        let mut cc = api
+        let cc = api
             .as_ref()
             .open_serial(COINKITE_VID, CKCC_PID, sn.as_ref())?;
 
         #[cfg(feature = "log")]
         log::info!("opened SN {} with opts: {:?}", sn.as_ref(), opts);
-        let opts = opts.unwrap_or_default();
 
+        Self::open_with_transport(
+            Box::new(cc),
+            sn.as_ref().to_owned(),
+            opts.unwrap_or_default(),
+        )
+    }
+
+    /// Connects to a running Coldcard simulator (`coldcard-mpy`) over its
+    /// `AF_UNIX SOCK_DGRAM` socket. The default simulator socket path is
+    /// `/tmp/ckcc-simulator.sock`. The serial number is reported as
+    /// `"simulator"`.
+    ///
+    /// MITM checking is meaningless on the simulator (no factory key) and
+    /// must be skipped by callers.
+    #[cfg(unix)]
+    pub fn open_simulator(
+        socket_path: impl AsRef<std::path::Path>,
+        opts: Option<Options>,
+    ) -> Result<(Self, Option<XpubInfo>), Error> {
+        let t = UnixDatagramTransport::connect(socket_path)?;
+        Self::open_with_transport(
+            Box::new(t),
+            "simulator".to_owned(),
+            opts.unwrap_or_default(),
+        )
+    }
+
+    /// Performs the ECDH/encryption handshake on an arbitrary [`Transport`].
+    /// Used by both the HID and simulator constructors.
+    fn open_with_transport(
+        mut cc: Box<dyn Transport>,
+        sn: String,
+        opts: Options,
+    ) -> Result<(Self, Option<XpubInfo>), Error> {
         let mut read_buf = [0_u8; 64];
         let mut send_buf = [0_u8; 2 + constants::CHUNK_SIZE];
 
         if opts.resync_on_open {
-            resync(&mut cc, &mut read_buf)?;
+            resync(cc.as_mut(), &mut read_buf)?;
         }
 
         let mut rng = rand::rngs::ThreadRng::default();
@@ -239,8 +277,9 @@ impl Coldcard {
             version: Some(opts.encrypt_version),
         };
 
-        send(encrypt_start, &mut cc, None, &mut send_buf)?;
-        let (cc_pk, xpub_fingerprint, xpub) = recv(&mut cc, None, &mut read_buf)?.into_my_pub()?;
+        send(encrypt_start, cc.as_mut(), None, &mut send_buf)?;
+        let (cc_pk, xpub_fingerprint, xpub) =
+            recv(cc.as_mut(), None, &mut read_buf)?.into_my_pub()?;
 
         // this is because the Coldcard returns a 64 byte pk (no sec1 0x04 prefix)
         let mut prefixed_cc_pk = [0_u8; 65];
@@ -269,7 +308,7 @@ impl Coldcard {
             decrypt,
             read_buf,
             send_buf,
-            sn: sn.as_ref().to_owned(),
+            sn,
         };
 
         Ok((
@@ -285,11 +324,15 @@ impl Coldcard {
     fn send(&mut self, request: Request) -> Result<Response, Error> {
         send(
             request,
-            &mut self.cc,
+            self.cc.as_mut(),
             Some(&mut self.encrypt),
             &mut self.send_buf,
         )?;
-        recv(&mut self.cc, Some(&mut self.decrypt), &mut self.read_buf)
+        recv(
+            self.cc.as_mut(),
+            Some(&mut self.decrypt),
+            &mut self.read_buf,
+        )
     }
 
     /// Checks if the communication line is undergoing a MITM attack.
@@ -399,7 +442,7 @@ impl Coldcard {
     /// Resyncs the Coldcard by sending a magic packet and discarding
     /// data until it is ready for use again. Normally no need to use this.
     pub fn resync(&mut self) -> Result<(), Error> {
-        resync(&mut self.cc, &mut self.read_buf)
+        resync(self.cc.as_mut(), &mut self.read_buf)
     }
 
     // Regular operations follow.
@@ -827,6 +870,18 @@ impl Coldcard {
             .map_err(Error::from)
     }
 
+    /// Inject keypresses into the simulator's numpad. Only the
+    /// `coldcard-mpy` simulator handles this (`XKEY` USB test command);
+    /// production firmware ignores the request and returns an error
+    /// string. Useful in CI to drive the on-device sign-confirm prompt
+    /// (`y` = approve) without a human at the keyboard.
+    pub fn sim_keypress(&mut self, keys: &[u8]) -> Result<(), Error> {
+        // The simulator returns `Response::Ok` (zero bytes) on success.
+        // Discard the response — we only care that the send succeeded.
+        let _ = self.send(Request::SimKey(keys.to_vec()))?;
+        Ok(())
+    }
+
     /// Gets a B58 encoded xpub at some derivation path. Master level if `None`.
     pub fn xpub(&mut self, path: Option<DerivationPath>) -> Result<String, Error> {
         self.send(Request::GetXPub(path))?
@@ -855,7 +910,7 @@ fn session_key(sk: k256::SecretKey, pk: k256::PublicKey) -> Result<[u8; 32], Err
 /// Sends a request to a Coldcard.
 fn send(
     request: Request,
-    cc: &mut hidapi::HidDevice,
+    cc: &mut dyn Transport,
     cipher: Option<&mut Aes256Ctr>,
     send_buf: &mut [u8; 2 + constants::CHUNK_SIZE],
 ) -> Result<(), Error> {
@@ -905,7 +960,7 @@ fn send(
 
 /// Reads a response from a Coldcard.
 fn recv(
-    cc: &mut hidapi::HidDevice,
+    cc: &mut dyn Transport,
     cipher: Option<&mut Aes256Ctr>,
     read_buf: &mut [u8; 64],
 ) -> Result<Response, Error> {
@@ -977,13 +1032,10 @@ fn recv(
 }
 
 /// Resyncs a Coldcard. Can block for short periods of time.
-fn resync(cc: &mut hidapi::HidDevice, read_buf: &mut [u8; 64]) -> Result<(), Error> {
+fn resync(cc: &mut dyn Transport, read_buf: &mut [u8; 64]) -> Result<(), Error> {
     #[cfg(feature = "log")]
     log::debug!("resyncing");
-    fn read_junk(
-        cc: &mut hidapi::HidDevice,
-        read_buf: &mut [u8; 64],
-    ) -> Result<(), hidapi::HidError> {
+    fn read_junk(cc: &mut dyn Transport, read_buf: &mut [u8; 64]) -> Result<(), TransportError> {
         loop {
             let read = cc.read_timeout(read_buf, 100)?;
             if read == 0 {
@@ -1013,6 +1065,7 @@ pub enum Error {
     Decoding(protocol::DecodeError),
     DerivationPath(protocol::derivation_path::Error),
     Hid(hidapi::HidError),
+    Transport(TransportError),
     EncryptionNotSetUp,
     Secp256k1,
     NoSecretOnDevice,
@@ -1056,6 +1109,15 @@ impl From<protocol::derivation_path::Error> for Error {
 impl From<hidapi::HidError> for Error {
     fn from(error: hidapi::HidError) -> Self {
         Error::Hid(error)
+    }
+}
+
+impl From<TransportError> for Error {
+    fn from(error: TransportError) -> Self {
+        match error {
+            TransportError::Hid(e) => Error::Hid(e),
+            other => Error::Transport(other),
+        }
     }
 }
 
