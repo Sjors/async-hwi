@@ -19,5 +19,6 @@ tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
 bitcoin = { version = "0.32", features = ["base64", "serde", "std"] }
 miniscript = { version = "12", features = ["std"] }
 async-hwi = { path = "..", version = "0.0.31", default-features = false, features = ["ledger", "coldcard"] }
+ledger_bitcoin_client = "0.6.0"
 hidapi = { version = "2.5.1", features = ["linux-static-hidraw"], default-features = false }
 shell-words = "1"

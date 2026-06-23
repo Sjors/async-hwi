@@ -6,13 +6,13 @@
 
 use async_hwi::ledger::{DeviceInfo, HidApi, Ledger, Transport, TransportHID};
 use bitcoin::bip32::{DerivationPath, Fingerprint};
-use bitcoin::psbt::Psbt;
 use miniscript::{Descriptor, DescriptorPublicKey};
 
 use crate::cli::Chain;
 use crate::commands::{DisplayAddressReq, GetDescriptorsOut, SignTxReq};
 use crate::descriptor::{address_from_descriptor, format_descriptor, ADDR_TYPES};
 use crate::policy::{build_default_policy, classify_singlesig, collect_signing_groups, SingleSig};
+use crate::psbt_compat;
 
 pub const LEDGER_VENDOR_ID: u16 = 0x2c97;
 
@@ -180,12 +180,7 @@ pub async fn do_signtx<T: Transport + Send + Sync>(
     chain: Chain,
     psbt_b64: &str,
 ) -> Result<String, String> {
-    use bitcoin::base64::Engine as _;
-
-    let raw = bitcoin::base64::engine::general_purpose::STANDARD
-        .decode(psbt_b64.trim())
-        .map_err(|e| format!("psbt base64 decode: {e}"))?;
-    let mut psbt = Psbt::deserialize(&raw).map_err(|e| format!("psbt parse: {e}"))?;
+    let (mut psbt, format) = psbt_compat::decode_base64(psbt_b64)?;
 
     let coin = chain.coin_type();
     let groups = collect_signing_groups(&psbt, fingerprint, coin);
@@ -219,8 +214,7 @@ pub async fn do_signtx<T: Transport + Send + Sync>(
         .await
         .map_err(|e| format!("sign_tx({purpose}h/{coin}h/{account}h): {e:?}"))?;
 
-    let bytes = psbt.serialize();
-    let out = bitcoin::base64::engine::general_purpose::STANDARD.encode(bytes);
+    let out = psbt_compat::encode_base64(&psbt, format);
     Ok(serde_json::json!({ "psbt": out }).to_string())
 }
 
@@ -255,7 +249,6 @@ pub async fn do_signtx_policy<T: Transport + Send + Sync>(
     device: Ledger<T>,
     req: SignTxReq,
 ) -> Result<String, String> {
-    use bitcoin::base64::Engine as _;
     use bitcoin::hex::FromHex;
 
     let SignTxReq::Policy {
@@ -271,10 +264,7 @@ pub async fn do_signtx_policy<T: Transport + Send + Sync>(
 
     let hmac = hmac.ok_or_else(|| "Ledger policy mode requires --hmac".to_string())?;
 
-    let raw = bitcoin::base64::engine::general_purpose::STANDARD
-        .decode(psbt_b64.trim())
-        .map_err(|e| format!("psbt base64 decode: {e}"))?;
-    let mut psbt = Psbt::deserialize(&raw).map_err(|e| format!("psbt parse: {e}"))?;
+    let (mut psbt, format) = psbt_compat::decode_base64(&psbt_b64)?;
 
     // Stash other signers' MuSig2 pub-nonce / partial-sig entries from
     // each input's `unknown` map so the Ledger app does not balk on
@@ -331,8 +321,7 @@ pub async fn do_signtx_policy<T: Transport + Send + Sync>(
         }
     }
 
-    let bytes = psbt.serialize();
-    let out = bitcoin::base64::engine::general_purpose::STANDARD.encode(bytes);
+    let out = psbt_compat::encode_base64(&psbt, format);
     Ok(serde_json::json!({ "psbt": out }).to_string())
 }
 

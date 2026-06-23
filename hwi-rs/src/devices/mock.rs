@@ -14,13 +14,13 @@
 //! script that drives them, not in what the mock claims to be.
 
 use bitcoin::bip32::{DerivationPath, Fingerprint, Xpriv, Xpub};
-use bitcoin::psbt::Psbt;
 use bitcoin::secp256k1::Secp256k1;
 
 use crate::cli::Chain;
 use crate::commands::{DisplayAddressReq, GetDescriptorsOut};
 use crate::descriptor::{address_from_descriptor, format_descriptor, ADDR_TYPES};
 use crate::devices::DeviceEntry;
+use crate::psbt_compat;
 
 const MOCK_SEED: [u8; 16] = [
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
@@ -195,19 +195,14 @@ impl MockDevice {
         chain: Chain,
         psbt_b64: &str,
     ) -> Result<String, String> {
-        use bitcoin::base64::Engine as _;
         self.require_fingerprint(fingerprint)?;
-        let raw = bitcoin::base64::engine::general_purpose::STANDARD
-            .decode(psbt_b64.trim())
-            .map_err(|e| format!("psbt base64 decode: {e}"))?;
-        let mut psbt = Psbt::deserialize(&raw).map_err(|e| format!("psbt parse: {e}"))?;
+        let (mut psbt, format) = psbt_compat::decode_base64(psbt_b64)?;
         // psbt.sign returns Err iff at least one input failed; ignore the
         // partial-failure case because Bitcoin Core only requires that the
         // PSBT come back with as many partial sigs as we could provide.
         let master = self.master(chain);
         let _ = psbt.sign(&master, &self.secp);
-        let bytes = psbt.serialize();
-        let out = bitcoin::base64::engine::general_purpose::STANDARD.encode(bytes);
+        let out = psbt_compat::encode_base64(&psbt, format);
         Ok(serde_json::json!({ "psbt": out }).to_string())
     }
 }

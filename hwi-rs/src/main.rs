@@ -22,6 +22,7 @@ mod commands;
 mod descriptor;
 mod devices;
 mod policy;
+mod psbt_compat;
 
 use std::process::ExitCode;
 

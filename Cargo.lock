@@ -1057,6 +1057,7 @@ dependencies = [
  "bitcoin",
  "clap",
  "hidapi",
+ "ledger_bitcoin_client",
  "miniscript",
  "serde",
  "serde_json",

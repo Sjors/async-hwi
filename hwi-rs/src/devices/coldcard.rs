@@ -19,6 +19,7 @@ use crate::cli::Chain;
 use crate::commands::{DisplayAddressReq, GetDescriptorsOut, SignTxReq};
 use crate::descriptor::{address_from_descriptor, format_descriptor, ADDR_TYPES};
 use crate::policy::{classify_singlesig, collect_signing_groups, SingleSig};
+use crate::psbt_compat;
 
 /// Default path of the headless `coldcard-mpy` simulator's Unix datagram
 /// socket. Matches the upstream firmware's hard-coded location.
@@ -191,12 +192,7 @@ pub fn do_signtx(
     chain: Chain,
     psbt_b64: &str,
 ) -> Result<String, String> {
-    use bitcoin::base64::Engine as _;
-
-    let raw = bitcoin::base64::engine::general_purpose::STANDARD
-        .decode(psbt_b64.trim())
-        .map_err(|e| format!("psbt base64 decode: {e}"))?;
-    let mut psbt = Psbt::deserialize(&raw).map_err(|e| format!("psbt parse: {e}"))?;
+    let (mut psbt, format) = psbt_compat::decode_base64(psbt_b64)?;
 
     // Sanity: PSBT must reference at least one of our keys. Coldcard will
     // sign whichever inputs it can, but if none belong to this device we
@@ -251,7 +247,7 @@ pub fn do_signtx(
         }
     }
 
-    let out = bitcoin::base64::engine::general_purpose::STANDARD.encode(psbt.serialize());
+    let out = psbt_compat::encode_base64(&psbt, format);
     Ok(serde_json::json!({ "psbt": out }).to_string())
 }
 
@@ -374,8 +370,6 @@ pub fn do_displayaddress_policy(
 /// partial sigs); the caller invokes `signtx` again after gathering
 /// the cosigners' contributions.
 pub fn do_signtx_policy(cc: &mut Coldcard, req: SignTxReq) -> Result<String, String> {
-    use bitcoin::base64::Engine as _;
-
     let SignTxReq::Policy {
         psbt: psbt_b64,
         name,
@@ -385,10 +379,7 @@ pub fn do_signtx_policy(cc: &mut Coldcard, req: SignTxReq) -> Result<String, Str
         return Err("do_signtx_policy called with non-policy request".into());
     };
 
-    let raw = bitcoin::base64::engine::general_purpose::STANDARD
-        .decode(psbt_b64.trim())
-        .map_err(|e| format!("psbt base64 decode: {e}"))?;
-    let mut psbt = Psbt::deserialize(&raw).map_err(|e| format!("psbt parse: {e}"))?;
+    let (mut psbt, format) = psbt_compat::decode_base64(&psbt_b64)?;
 
     let descriptor_name = make_descriptor_name(&name)?;
     cc.sign_psbt_miniscript(&psbt.serialize(), SignMode::Signed, Some(descriptor_name))
@@ -435,6 +426,6 @@ pub fn do_signtx_policy(cc: &mut Coldcard, req: SignTxReq) -> Result<String, Str
         }
     }
 
-    let out = bitcoin::base64::engine::general_purpose::STANDARD.encode(psbt.serialize());
+    let out = psbt_compat::encode_base64(&psbt, format);
     Ok(serde_json::json!({ "psbt": out }).to_string())
 }
