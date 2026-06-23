@@ -427,6 +427,40 @@ jobs:
           find /tmp -maxdepth 4 -name 'speculos.log' -print -exec tail -n 200 {} \; 2>/dev/null || true
 
   # ----------------------------------------------------------------------------
+  # Extends the Ledger MuSig2 coverage with a descriptor that has both a MuSig2
+  # key path and a Ledger-only timelocked tapleaf fallback. The script verifies
+  # the key-path spend first, then proves the tapleaf path by rebroadcasting the
+  # exact same transaction after the BIP68 relative timelock matures.
+  # ----------------------------------------------------------------------------
+  speculos_musig_timelock_integration:
+    name: integration (speculos ledger, musig timelock)
+    needs: [bitcoind_builder, ledger_app, hwi_rs_builder]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libevent-dev libcapnp-1.0.1
+
+      - uses: ./.github/actions/setup-bitcoind
+      - uses: ./.github/actions/setup-hwi-rs
+      - uses: ./.github/actions/setup-ledger-speculos
+
+      - name: MuSig2 timelock scenario (regtest, speculos)
+        env:
+          LEDGER_APP_ELF: ${{ github.workspace }}/ledger_app/app.elf
+          SPECULOS: speculos
+        run: bash hwi-rs/tests/run-musig-timelock-scenario-speculos.sh
+
+      - name: Dump speculos log on failure
+        if: failure()
+        run: |
+          find /tmp -maxdepth 4 -name 'speculos.log' -print -exec tail -n 200 {} \; 2>/dev/null || true
+
+  # ----------------------------------------------------------------------------
   # "Kumbaya" 3-of-3 MuSig2 scenario: combines BOTH supported HW-wallet
   # simulators (speculos Ledger + `coldcard-mpy`) and a Bitcoin Core hot
   # HD key into a single wallet. Exercises the multi-signer paths in
